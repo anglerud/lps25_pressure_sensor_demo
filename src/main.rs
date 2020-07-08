@@ -9,7 +9,9 @@
 #![no_std]
 #![no_main]
 
-use panic_halt as _;
+//use panic_halt as _;
+use core::panic::PanicInfo;
+use rtt_target::{rprintln, rtt_init_print};
 
 use nb::block;
 
@@ -23,6 +25,8 @@ use embedded_hal::digital::v2::OutputPin;
 
 #[entry]
 fn main() -> ! {
+    // Init buffers for debug printing
+    rtt_init_print!();
     // Get access to the core peripherals from the cortex-m crate
     let cp = cortex_m::Peripherals::take().unwrap();
     // Get access to the device specific peripherals from the peripheral access crate
@@ -46,11 +50,25 @@ fn main() -> ! {
     // Configure the syst timer to trigger an update every second
     let mut timer = Timer::syst(cp.SYST, &clocks).start_count_down(1.hz());
 
+    rprintln!("Hello, Rust!");
     // Wait for the timer to trigger an update and change the state of the LED
+    let mut i = 0;
     loop {
         block!(timer.wait()).unwrap();
         led.set_high().unwrap();
         block!(timer.wait()).unwrap();
         led.set_low().unwrap();
+        i += 1;
+        rprintln!("Hello again; I have blinked {} times.", i);
+        if i == 10 {
+            panic!("Yow, 10 times is enough!");
+        }
     }
+}
+
+#[inline(never)]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    rprintln!("{}", info);
+    loop {} // You might need a compiler fence in here.
 }
