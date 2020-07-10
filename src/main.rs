@@ -7,7 +7,7 @@
 
 #![deny(unsafe_code)]
 #![no_std]
-#![no_main]
+#![cfg_attr(not(doc), no_main)]
 
 //use panic_halt as _;
 use core::panic::PanicInfo;
