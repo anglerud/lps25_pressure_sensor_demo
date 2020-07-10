@@ -9,9 +9,8 @@
 #![no_std]
 #![cfg_attr(not(doc), no_main)]
 
-//use panic_halt as _;
-use core::panic::PanicInfo;
 use rtt_target::{rprintln, rtt_init_print};
+use panic_rtt_target as _;
 
 use nb::block;
 
@@ -64,11 +63,4 @@ fn main() -> ! {
             panic!("Yow, 10 times is enough!");
         }
     }
-}
-
-#[inline(never)]
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    rprintln!("{}", info);
-    loop {} // You might need a compiler fence in here.
 }
