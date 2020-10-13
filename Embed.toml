@@ -13,13 +13,17 @@ protocol = "Swd"
 [default.flashing]
 # Whether or not the target should be flashed.
 enabled = true
-# Whether or not the target should be halted after flashing.
-halt_afterwards = false
 # Whether or not bytes erased but not rewritten with data from the ELF
 # should be restored with their contents before erasing.
 restore_unwritten_bytes = false
 # The path where an SVG of the assembled flash layout should be written to.
 # flash_layout_output_path = "out.svg"
+
+[default.reset]
+# Whether or not the target should be reset.
+enabled = true
+# Whether or not the target should be halted after flashing.
+halt_afterwards = false
 
 [default.general]
 # The chip name of the chip to be debugged.
@@ -27,7 +31,7 @@ chip = "stm32f103C8"
 # A list of chip descriptions to be loaded during runtime.
 chip_descriptions = []
 # The default log level to be used.
-log_level = "Warn"
+log_level = "WARN"
 
 [default.rtt]
 # Whether or not an RTTUI should be opened after flashing.
