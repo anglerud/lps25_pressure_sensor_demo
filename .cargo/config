@@ -2,7 +2,7 @@
 # uncomment ONE of these three option to make `cargo run` start a GDB session
 # which option to pick depends on your system
 # runner = "arm-none-eabi-gdb -q -x openocd.gdb"
-runner = "gdb-multiarch"
+runner = "probe-run --chip STM32F103C8"
 # runner = "gdb -q -x openocd.gdb"
 
 rustflags = [
