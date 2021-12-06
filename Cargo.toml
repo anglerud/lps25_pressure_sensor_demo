@@ -21,6 +21,7 @@ panic-rtt-target = { version = "0.1.0", features = ["cortex-m"] }
 embedded-hal = "0.2.4"
 nb = "1.0.0"
 rtt-target = { version = "0.2.0", features = ["cortex-m"] }
+lps25hb = "0.0.4"
 
 [dependencies.stm32f1xx-hal]
 version = "0.6.1"
