@@ -32,7 +32,7 @@ which I did wit hthe
 [STSW-LINK007](https://www.st.com/en/development-tools/stsw-link007.html)
 firmware upgrade application. This is a Java app which works well on Linux.
 
-We program the microcontroller using [Rust](https://www.rust-lang.org/). I read
+I program the microcontroller using [Rust](https://www.rust-lang.org/). I read
 [Circuit4u](https://circuit4us.medium.com/)'s [Rust on STM32F103 Blue Pill with
 Probe-run
 tooling](https://circuit4us.medium.com/rust-on-stm32f103-blue-pill-with-probe-run-tooling-b596f0623091)
@@ -85,8 +85,8 @@ diagram). For more information on the exact programmer I have used - look at
 the "ST-LINK/V2 Clone" section.
 
 I'm using the first I2C bus on the Blue Pill, which is made up of pins SCL1 and
-SDA1. These are labeled and PB7 on the board. You can see the pinout diagram
-and chart on microcontrollerslab.com's [Blue Pill pinout - peripherals
+SDA1. These are labeled PB6 and PB7 on the board. You can see the pinout
+diagram and chart on microcontrollerslab.com's [Blue Pill pinout - peripherals
 programming
 features](https://microcontrollerslab.com/stm32f103c8t6-blue-pill-pinout-peripherals-programming-features/)
 article.
