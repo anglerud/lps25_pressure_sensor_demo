@@ -1,39 +1,58 @@
-//! Blinks an LED
+//! Barometer with an LCD display
 //!
-//! This assumes that a LED is connected to pc13 as is the case on the blue pill board.
+//! This needs an LPS25 pressure sensor and an I2C-enabled HD44780 LCD display hooked up to PB6 and
+//! PB7. See the README.md in this repo for how to wire this all up.
 //!
-//! Note: Without additional hardware, PC13 should not be used to drive an LED, see page 5.1.2 of
-//! the reference manual for an explanation. This is not an issue on the blue pill.
+//! This code was started from the `blue_pill_base` repo which you can read about in the README as
+//! well.
 
-#![deny(unsafe_code)]
 #![no_std]
 #![cfg_attr(not(doc), no_main)]
+#![feature(alloc_error_handler)]
 
+// This gives us `alloc` support, so we can use the format macro.
+use core::alloc::Layout;
+extern crate alloc;
+use alloc_cortex_m::CortexMHeap;
+
+// This is the "Real Time Terminal" support for the debugger. I'm using an ST-Link V2 clone.
 use rtt_target::{rprintln, rtt_init_print};
 use panic_rtt_target as _;
 
-use nb::block;
-
+// The Blue Pill's HAL crate imports.
 use stm32f1xx_hal::{
-    delay::Delay, // Maybe not needed
+    delay,
     i2c,
     prelude::*,
     pac,
-    timer::Timer,
 };
 use cortex_m_rt::entry;
 use embedded_hal::digital::v2::OutputPin;
 
-// Pressure sensor - LPS25
+// Shared-bus lets us use multiple I2C devices on the same I2C bus.
+use shared_bus;
+
+// 16x2 LED screen.
+use hd44780_driver::{Cursor, CursorBlink, Display, DisplayMode, HD44780};
+
+// Pressure sensor - LPS25 - breakout board by Adafruit
 use lps25hb::*;
 use lps25hb::interface::{I2cInterface,
     i2c::I2cAddress};
-use lps25hb::sensor::*;
-use lps25hb::register::*;
+
+const LCD_I2C_ADDRESS: u8 = 0x27;
+
+#[global_allocator]
+static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
 
 #[entry]
 fn main() -> ! {
+    // We need to initialize the allocator BEFORE using it - so we do that first.
+    let start = cortex_m_rt::heap_start() as usize;
+    let size = 256; // in bytes
+    unsafe { ALLOCATOR.init(start, size) }
+
     // Init buffers for debug printing
     rtt_init_print!();
     // Get access to the core peripherals from the cortex-m crate
@@ -49,20 +68,17 @@ fn main() -> ! {
     // Freeze the configuration of all the clocks in the system and store the frozen frequencies in
     // `clocks`
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
+    let mut delay = delay::Delay::new(cp.SYST, clocks);
 
     // Acquire the GPIOC peripheral
-    // FIXME: Probably only some of these are neded.
-    // let mut gpioa = dp.GPIOA.split(&mut rcc.ahb2);
     let mut gpiob = dp.GPIOB.split(&mut rcc.apb2);
     let mut gpioc = dp.GPIOC.split(&mut rcc.apb2);
 
     // Configure gpio C pin 13 as a push-pull output. The `crh` register is passed to the function
     // in order to configure the port. For pins 0-7, crl should be passed instead.
     let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
-    // Configure the syst timer to trigger an update every second
-    let mut timer = Timer::syst(cp.SYST, &clocks).start_count_down(1.hz());
 
-    // Set up i2c
+    // Set up I2C
     let afio = dp.AFIO.constrain(&mut rcc.apb2);
     let mut mapr = afio.mapr;
     let mut apb = rcc.apb1;
@@ -87,47 +103,62 @@ fn main() -> ! {
         addr_timeout_us,
         data_timeout_us,
     );
+    // This shared bus lets us pass the I2C bus to multiple devices.
+    let i2c_bus = shared_bus::BusManagerSimple::new(i2c);
 
+    // Initialize the LCD panel.
+    let mut lcd = HD44780::new_i2c(i2c_bus.acquire_i2c(), LCD_I2C_ADDRESS, &mut delay).unwrap();
+    lcd.reset(&mut delay).unwrap();
+    lcd.clear(&mut delay).unwrap();
+    lcd.set_display_mode(
+        DisplayMode {
+            display: Display::On,
+            cursor_visibility: Cursor::Visible,
+            cursor_blink: CursorBlink::On,
+        },
+        &mut delay
+    ).unwrap();
 
     // configure I2C interface for the LPS25HB driver.
-    let i2c_interface = I2cInterface::init(i2c, I2cAddress::SA0_VCC);
+    let i2c_interface = I2cInterface::init(i2c_bus.acquire_i2c(), I2cAddress::SA0_VCC);
     // create a new LPS25 instance with the I2C interface
     let mut lps25hb = LPS25HB::new(i2c_interface);
 
-    // turn the sensor on
     lps25hb.sensor_on(true).unwrap();
-
     // enable Block Data Update
     lps25hb.bdu_enable(true).unwrap();
-
-    // set data rate to 7Hz
     lps25hb.set_datarate(ODR::_1Hz).unwrap();
 
-
-
-    rprintln!("Hello, Rust!");
-    // Wait for the timer to trigger an update and change the state of the LED
-    let mut i = 0;
     loop {
-        block!(timer.wait()).unwrap();
-        led.set_high().unwrap();
-        block!(timer.wait()).unwrap();
-        led.set_low().unwrap();
-
-        // read temperature and pressure
+        // Read temperature and pressure.  We can't rely on the temperature sensor for actual
+        // temperature readings.  It shows 19.2C when the CO2 sensor says 25.9, and the DK internal
+        // sensor says 27.25. ST's website only advertises it as a pressure sensor and doesn't
+        // mention the thermometer at all. I think it's just there to switch between different
+        // profiles based on very coarse-grained temperature bands.
+        // We print out the read temperature, but don't display it on the LCD panel.
         let temp = lps25hb.read_temperature().unwrap();
         let press = lps25hb.read_pressure().unwrap();
 
-        let id = lps25hb.get_device_id().unwrap();
+        lcd.clear(&mut delay).unwrap();
+        let hpa_str = alloc::format!("{:.1} hPa", press);
+        // hecto is a bit of an odd size, also display is KiloPascal.
+        let kpa_str = alloc::format!("{:.2} kPa", press / 10.0);
+
+        lcd.write_str(&hpa_str, &mut delay).unwrap();
+        lcd.set_cursor_pos(40, &mut delay).unwrap();  // Move to 2nd row.
+        lcd.write_str(&kpa_str, &mut delay).unwrap();
 
         rprintln!("temperature: {:.1} C, pressure: {:.1} hPa", temp, press);
-        rprintln!("my name is: {}", id);
 
-
-        i += 1;
-        rprintln!("Hello again; I have blinked {} times.", i);
-        if i == 10 {
-            panic!("Yow, 10 times is enough!");
-        }
+        // Blink the Blue Pill's onboard LED to show liveness.
+        delay.delay_ms(1_000_u16);
+        led.set_high().unwrap();
+        delay.delay_ms(1_000_u16);
+        led.set_low().unwrap();
     }
+}
+
+#[alloc_error_handler]
+fn oom(_: Layout) -> ! {
+    loop {}
 }
