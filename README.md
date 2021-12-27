@@ -36,7 +36,8 @@ I program the microcontroller using [Rust](https://www.rust-lang.org/). I read
 [Circuit4u](https://circuit4us.medium.com/)'s [Rust on STM32F103 Blue Pill with
 Probe-run
 tooling](https://circuit4us.medium.com/rust-on-stm32f103-blue-pill-with-probe-run-tooling-b596f0623091)
-article on using Rust on the Blue Pill. They've also got a
+article on using Rust on the Blue Pill. They've also got link to
+[Levi Pearson](https://www.pinealservo.com)'s
 [blue_pill_base](https://cgit.pinealservo.com/BluePill_Rust/blue_pill_base) git
 repo that I cloned as the base for working in Rust with the Blue Pill. This
 sets up the `probe-rs` integration and more.
