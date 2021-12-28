@@ -121,12 +121,16 @@ For the I2C data line, there should be a connection between:
 * SDI on the LPS25.
 * SDA on the display board.
 
-One slightly tricky thing in this build is that the Blue Pill and the LPS25 run
-on 3.3V, but the display requires 5V to work fully. Fortunately the ST-Link V2
-has both pins for 3.3V and 5V, making this easy. As you can see in the diagram
-below - I have one rail on the breadboard connected to 3.3V and one to 5V. The
-5V rail is then connected to VCC on the display, while the 3.3V rail is
-connected to VIN on the LPS25.
+All of the components are tolerant to a wide range of power - the LPS25 can run
+on either 3.3V or 5V, the Blue Pill can run on 5V USB, 5V pin or a 3.3V pin,
+and finally the LCD panel needs 5V to run properly. The LCD panel will work at
+3.3V, but the characters won't be backlit and will be really hard to read. So,
+I had a lot of leeway to choose how to power this project. As the Blue Pill was
+already running off the ST-Link, that's sorted already. I chose to run the
+LPS25 off 3.3V from the ST-Link, and the LCD panel off one of its 5V outputs.
+As you can see in the diagram below - I have one rail on the breadboard
+connected to 3.3V and one to 5V. The 5V rail is then connected to VCC on the
+display, while the 3.3V rail is connected to VIN on the LPS25.
 
 The diagram below tries to show the different power levels as two different
 inputs, but they're actually both coming from the ST-Link - just one rail is
