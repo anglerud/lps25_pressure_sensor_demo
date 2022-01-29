@@ -274,16 +274,35 @@ impl SensorReading {
     }
 }
 
-/// An AHT20 sensor on the I2C bus `I`, with a Delay device `D`.
-/// FIXME: Also take a delay.
-pub struct AHT20<'a, I, D>
+
+// NOTE: for blog. This was my initial definition, but this doesn't
+//   work because you can't use the delay functions in more than
+//   one place even if you send in a borrow. The delay's functions
+//   take &mut self, thus we need to make this a mutable reference.
+//   It's a bit of a shame, this is my first use of an explicit
+//   lifetime, and the functions all taking (&mut delay) looks
+//   pretty ugly! The LCD driver I use took this approach, and has
+//   clearly noticed the same.
+// /// An AHT20 sensor on the I2C bus `I`, with a Delay device `D`.
+// pub struct AHT20<'a, I, D>
+// where
+//     I: i2c::Read + i2c::Write,
+//     D: DelayUs<u16> + DelayMs<u16>,
+// {
+//     i2c: I,
+//     address: u8,
+//     delay: &'a mut D,
+//     initialized: bool,
+// }
+
+
+/// An AHT20 sensor on the I2C bus `I`.
+pub struct AHT20<I>
 where
     I: i2c::Read + i2c::Write,
-    D: DelayUs<u16> + DelayMs<u16>,
 {
     i2c: I,
     address: u8,
-    delay: &'a mut D,
     initialized: bool,
 }
 
@@ -296,19 +315,16 @@ pub enum Error<E> {
     InvalidCrc,
 }
 
-impl<'a, E, I, D> AHT20<'a, I, D>
+impl<E, I> AHT20<I>
 where
     I: i2c::Read<Error = E> + i2c::Write<Error = E>,
-    D: DelayUs<u16> + DelayMs<u16>,
 {
     /// Initializes the SCD30 driver.
     /// This consumes the I2C bus `I`
-    /// Delay.. TODO: continue documenting
-    pub fn new(i2c: I, address: u8, delay: &'a mut D) -> Self {
+    pub fn new(i2c: I, address: u8) -> Self {
         AHT20 {
             i2c: i2c,
             address: address,
-            delay: delay,
             initialized: false,
         }
     }
@@ -333,29 +349,18 @@ where
     ///                 ▼
     ///                Yes
     /// ```
-    pub fn init(&mut self) -> Result<(), Error<E>> {
-        self.delay.delay_ms(40_u16);
+    pub fn init(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>>
+    {
+        delay.delay_ms(40_u16);
 
         while !self.check_status()?.is_calibrated() {
             self.send_initialize()?;
-            self.delay.delay_ms(10_u16);
+            delay.delay_ms(10_u16);
         }
 
         self.initialized = true;
 
-        return Ok(());
-
-        // let minor = read_buffer[1];
-        // let crc = read_buffer[2];
-
-        // So no CRC on the init commands, only the sensor read it seems.
-        // if compute_crc(&read_buffer[..2]) == crc {
-        //     Ok([major, minor])
-        // } else {
-        //     Err(Error::InvalidCrc)
-        // }
-
-        // TODO: Remember to set self.initialized = true;
+        Ok(())
     }
 
     // Send CheckStatus, read one byte back.
@@ -443,9 +448,9 @@ where
     /// FIXME: return a result with the right value
     ///        Also, should this return a Result, or just the
     ///        temp value?
-    pub fn measure(&mut self) -> Result<SensorReading, Error<E>> {
+    pub fn measure(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<SensorReading, Error<E>> {
         loop {
-            let measurement_result = self.measure_once();
+            let measurement_result = self.measure_once(delay);
             match measurement_result {
                 Ok(sb) => {
                     return Ok(SensorReading::from_bytes([
@@ -460,17 +465,17 @@ where
 
     // XXX: OK, so we might not be able to return that specific a type
     //      in the result? Check.
-    pub fn measure_once(&mut self) -> Result<[u8; 5], Error<E>> {
+    pub fn measure_once(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<[u8; 5], Error<E>> {
         // TODO: 1. check that we're initialized. That implies we're
         //          also calibrated.
         //       2. if not, return an Uninitialized error.
         self.send_trigger_measurement()?;
-        self.delay.delay_ms(80_u16);
+        delay.delay_ms(80_u16);
 
         // Wait for measurement to be ready
         // TODO: also an is_busy? Makes the loop nicer?
         while !self.check_status()?.is_ready() {
-            self.delay.delay_ms(1_u16);
+            delay.delay_ms(1_u16);
         }
 
         // So, the datasheet is quite clear that we read back 7 bytes total. The first byte is a
@@ -523,14 +528,21 @@ where
 /// Section 5.4.4:
 ///
 /// > CRC initial vaue is 0xFF, crc8 check polynomial CRC[7:0]=1+x**4 + x**5 + x**8
+/// NOTE for blog. "Those are certainly some words". I had no idea how to go from that
+///   description to parameters to put into the crc-any crate's functions. As I frequently
+///   do when faced with something I don't know, I started on Wikipedia.
 ///
 /// https://en.wikipedia.org/wiki/Cyclic_redundancy_check#Polynomial_representations_of_cyclic_redundancy_checks
 /// You can find it in the table on wikipedia, under "CRC-8-Dallas/Maxim", 1-Wire bus.
 ///
+/// NOTE: for blog. That wasn't actually that helpful. I found a likely magic value, but no
+///   idea why. A little more googling led me to an article which actually explains it.
 /// This article explains how we get from `CRC[7:0]=1 + x**4 + x**5 + x**8` to `0x31` as the hex
 /// representation: http://www.sunshine2k.de/articles/coding/crc/understanding_crc.html#ch72
 ///
+/// The **N is the Nth bit (zero indexed).
 /// > The most significant bit [(x**8)] is left out in the hexadecimal representation
+/// So that the leaves bit 0 (the +1 we do), 4, 5
 ///
 /// So that gives us:
 ///
@@ -541,6 +553,8 @@ where
 ///
 /// And, confirming that's right, this is what Knurling's test driver crate uses.
 /// https://github.com/knurling-rs/test-driver-crate-example/blob/main/src/lib.rs#L59
+/// which indicates this is either an I2C thing, or a common driver default as CRC parameters.
+/// NOTE: for blog. The above.
 fn compute_crc(bytes: &[u8]) -> u8 {
     // Poly (0x31), bits (8), initial (0xff), final_xor (0x00), reflect (flase).
     let mut crc = CRCu8::create_crc(0x31, 8, 0xff, 0x00, false);
@@ -599,8 +613,8 @@ mod tests {
         let mock_i2c_2 = I2cMock::new(&[]);
         let mut mock_delay = MockDelay::new();
 
-        let _aht20_1 = AHT20::new(mock_i2c_1, SENSOR_ADDRESS, &mut mock_delay);
-        let _aht20_2 = AHT20::new(mock_i2c_2, SENSOR_ADDRESS, &mut mock_delay);
+        let _aht20_1 = AHT20::new(mock_i2c_1, SENSOR_ADDRESS);
+        let _aht20_2 = AHT20::new(mock_i2c_2, SENSOR_ADDRESS);
     }
 
     #[test]
@@ -614,7 +628,7 @@ mod tests {
         let mock_i2c = I2cMock::new(&expectations);
         let mut mock_delay = MockDelay::new();
 
-        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS, &mut mock_delay);
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         let status = aht20.check_status().unwrap();
         assert_eq!(status.is_calibrated(), true);
 
@@ -636,7 +650,7 @@ mod tests {
         let mock_i2c = I2cMock::new(&expectations);
         let mut mock_delay = MockDelay::new();
 
-        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS, &mut mock_delay);
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
 
         let mut mock = aht20.destroy().i2c;
         // FIXME: OK, currently our tests don't match reality it seems.
@@ -657,7 +671,7 @@ mod tests {
         let mock_i2c = I2cMock::new(&expectations);
         let mut mock_delay = MockDelay::new();
 
-        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS, &mut mock_delay);
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         aht20.send_initialize().unwrap();
 
         let mut mock = aht20.destroy().i2c;

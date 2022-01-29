@@ -133,35 +133,45 @@ fn main() -> ! {
     //   * the driver is agpl, but it's a library... not a good match.
     //   * it's blocking - see if we can't make a non-blocking one, see PR to driver.
     //   * it'll be fun! You've only done this guided before.
-    // let mut aht20_dev = aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS, &mut delay);
-    // aht20_dev.init().unwrap();
-    // let status = aht20_dev.check_status().unwrap();
-    // rprintln!("aht20 status: {:?}, ready: {}, calibrated: {}", status, status.is_ready(), status.is_calibrated());
-    // let measurement = aht20_dev.measure().unwrap();
-    // rprintln!("measurement: {:?}", measurement);
+    let mut aht20_dev = aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS);
+    aht20_dev.init(&mut delay).unwrap();
+    let status = aht20_dev.check_status().unwrap();
+    rprintln!("aht20 status: {:?}, ready: {}, calibrated: {}", status, status.is_ready(), status.is_calibrated());
+    let measurement = aht20_dev.measure(&mut delay).unwrap();
+    rprintln!("measurement: {:?}", measurement);
 
     loop {
         // Read temperature and pressure.  We can't rely on the lps25 temperature sensor for actual
-        // temperature readings.  It shows 19.2C when the CO2 sensor says 25.9, and the DK internal
-        // sensor says 27.25. ST's website only advertises it as a pressure sensor and doesn't
-        // mention the thermometer at all. I think it's just there to switch between different
-        // profiles based on very coarse-grained temperature bands.
-        // We print out the read temperature, but don't display it on the LCD panel.
+        // temperature readings. Current sensor spread (all on the same desk):
+        //
+        // * aht20: 21.4 (I believe this one, it's a dedicated sensor, and feels right)
+        // * scd30: 23.9
+        // * nrf52-dk dev board: 25.0
+        // * lps25: 16.78 - yeah, definitely not, it's 9C outside, and the heating is on.
+        //   8.2C between this and the dev board. :facepalm:
+        //
+        // NOTE: for blog. The above and why I want a dedicated temperature sensor.
+        // NOTE: this is a good intro as to why I wanted to test this sensor at all.
+        //
+        // ST's website only advertises it as a pressure sensor and doesn't mention the thermometer
+        // at all. I think it's just there to switch between different profiles based on very
+        // coarse-grained temperature bands.  We print out the read temperature, but don't display
+        // it on the LCD panel.
         //
         // Here, we can get a measurement if we create, then destroy the sensor! That works because
         // then we release the delay device. This really sucks. We *could* take the delay as a
         // function parameter, rather than embed it in the aht20? That way we'd not hold on to
         // it. Is that why the lcd takes it as a param? Might well be!
         // Commit this way, then try to move the delay into a function param.
-        let mut aht20_dev = aht20_driver::AHT20::new(
-            i2c_bus.acquire_i2c(),
-            aht20_driver::SENSOR_ADDRESS,
-            &mut delay,
-        );
-        aht20_dev.init().unwrap();
-        let aht20_measurement = aht20_dev.measure().unwrap();
+        // let mut aht20_dev = aht20_driver::AHT20::new(
+        //     i2c_bus.acquire_i2c(),
+        //     aht20_driver::SENSOR_ADDRESS,
+        //     &mut delay,
+        // );
+        // aht20_dev.init().unwrap();
+        let aht20_measurement = aht20_dev.measure(&mut delay).unwrap();
         rprintln!("aht20_measurement: {:?}", aht20_measurement);
-        aht20_dev.destroy();
+        // aht20_dev.destroy();
 
         let press = lps25hb.read_pressure().unwrap();
         let lps25_temp = lps25hb.read_temperature().unwrap();
