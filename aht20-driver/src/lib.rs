@@ -70,11 +70,22 @@
 //!        Calc Humidity and Temp
 //! ```
 
+// TODO:
+// * implement SoftReset
+// * more tests
+// * check initialized in more places and return an error
+//   if not. New variant in error enum for that (also test it).
+// * split into independent crate and push to staging repo
+// * push 0.0.1 to real repo
+// * use in the lps25_demo... app.
+// * push 1.0.0 to real repo
+// * write blog
+// * submit driver and blog to embedded awesome
+// * submit driver and blog to /r/rust
+// * submit driver and blog to rust discourse
 use crc_any::CRCu8;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::blocking::i2c;
-
-use rtt_target::rprintln;
 
 /// AHT20 I2C address
 pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
@@ -274,7 +285,6 @@ impl SensorReading {
     }
 }
 
-
 // NOTE: for blog. This was my initial definition, but this doesn't
 //   work because you can't use the delay functions in more than
 //   one place even if you send in a borrow. The delay's functions
@@ -294,7 +304,6 @@ impl SensorReading {
 //     delay: &'a mut D,
 //     initialized: bool,
 // }
-
 
 /// An AHT20 sensor on the I2C bus `I`.
 pub struct AHT20<I>
@@ -349,8 +358,7 @@ where
     ///                 ▼
     ///                Yes
     /// ```
-    pub fn init(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>>
-    {
+    pub fn init(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>> {
         delay.delay_ms(40_u16);
 
         while !self.check_status()?.is_calibrated() {
@@ -448,7 +456,10 @@ where
     /// FIXME: return a result with the right value
     ///        Also, should this return a Result, or just the
     ///        temp value?
-    pub fn measure(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<SensorReading, Error<E>> {
+    pub fn measure(
+        &mut self,
+        delay: &mut (impl DelayUs<u16> + DelayMs<u16>),
+    ) -> Result<SensorReading, Error<E>> {
         loop {
             let measurement_result = self.measure_once(delay);
             match measurement_result {
@@ -465,7 +476,10 @@ where
 
     // XXX: OK, so we might not be able to return that specific a type
     //      in the result? Check.
-    pub fn measure_once(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<[u8; 5], Error<E>> {
+    pub fn measure_once(
+        &mut self,
+        delay: &mut (impl DelayUs<u16> + DelayMs<u16>),
+    ) -> Result<[u8; 5], Error<E>> {
         // TODO: 1. check that we're initialized. That implies we're
         //          also calibrated.
         //       2. if not, return an Uninitialized error.
@@ -481,10 +495,12 @@ where
         // So, the datasheet is quite clear that we read back 7 bytes total. The first byte is a
         // status byte - which seems very redundant, as we have just been checking the status
         // above. However, it's there - but we can just ignore it. We can't get rid of it though
-        // as it's part of the CRCd data.
+        // as it's part of the CRCd data. OK, being CRCd is an advantage though!
         // NOTE: for the blog - At first I only did the data part, and stripped out the
         //       status byte, thus got the wrong CRC value.
         // TODO OR: doublecheck the status byte - check for ready and calibrated again?
+        // NOTE: So the CRC covers the status byte, which is nice I guess. So it could be
+        //       a little more reliable? So I think we should use it.
         let mut read_buffer = [0u8; 7];
         self.i2c
             .read(self.address, &mut read_buffer)
@@ -494,16 +510,6 @@ where
         let crc_byte: u8 = read_buffer[6];
 
         let crc = compute_crc(data);
-        // FIXME: OK, need to print out the input to the CRC here, and
-        //        also the CRC result and byte. Something is wrong.
-        //        Also print out the len() of data - it should be 5, but make sure
-        //        Also - there *might* be a status byte at the front which we should
-        //        ignore?
-        rprintln!("read_buffer: {:?}", read_buffer);
-        rprintln!("data: {:?}", data);
-        rprintln!("crc_byte: {:?}", crc_byte);
-        rprintln!("computed crc: {:?}", crc);
-        // TODO: remove rprintln *and* the rtt-target dependency!
         if crc_byte != crc {
             return Err(Error::InvalidCrc);
         }
@@ -611,7 +617,6 @@ mod tests {
         // I think this is fine for a test.
         let mock_i2c_1 = I2cMock::new(&[]);
         let mock_i2c_2 = I2cMock::new(&[]);
-        let mut mock_delay = MockDelay::new();
 
         let _aht20_1 = AHT20::new(mock_i2c_1, SENSOR_ADDRESS);
         let _aht20_2 = AHT20::new(mock_i2c_2, SENSOR_ADDRESS);
@@ -626,35 +631,12 @@ mod tests {
             Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
         ];
         let mock_i2c = I2cMock::new(&expectations);
-        let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         let status = aht20.check_status().unwrap();
         assert_eq!(status.is_calibrated(), true);
 
         let mut mock = aht20.destroy().i2c;
-        mock.done(); // verify expectations
-    }
-
-    #[test]
-    fn test_init() {
-        // FIXME: Need two different inits
-        // One where we get not calibrated back, then one where we don't.
-        // and then call send_initialize and finally get a real calibrate back.
-        let expectations = vec![
-            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
-            // 4th bit being 1 signifies the sensor being calibrated.
-            // Equiv to 0x01 << 3, or 8 (dec) or 0x08
-            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
-        ];
-        let mock_i2c = I2cMock::new(&expectations);
-        let mut mock_delay = MockDelay::new();
-
-        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-
-        let mut mock = aht20.destroy().i2c;
-        // FIXME: OK, currently our tests don't match reality it seems.
-        //        fix up this test.
         mock.done(); // verify expectations
     }
 
@@ -669,11 +651,69 @@ mod tests {
             ],
         )];
         let mock_i2c = I2cMock::new(&expectations);
-        let mut mock_delay = MockDelay::new();
+        // let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         aht20.send_initialize().unwrap();
 
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
+
+    #[test]
+    fn test_init_with_calibrated_sensor() {
+        // This test has check_status return an already calibrated sensor. This means
+        // that send_initialize is not called.
+        let expectations = vec![
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            // 4th bit being 1 signifies the sensor being calibrated.
+            // Equiv to 0x01 << 3, or 8 (dec) or 0x08
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        assert_eq!(aht20.initialized, false);
+        aht20.init(&mut mock_delay).unwrap();
+
+        assert_eq!(aht20.initialized, true);
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
+
+    #[test]
+    fn test_init_with_uncalibrated_sensor() {
+        // This test has check_status return an uncalibrated sensor. With that, a call
+        // to send_initialize is done to initialize and calibrate the sensor. A second
+        // call to check_status verifies the new calibrated status.
+        let expectations = vec![
+            // The first two transactions are check_status
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            // 4th bit being 0 signifies the sensor not being calibrated.
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_0000]),
+            // This is send_initialize
+            Transaction::write(
+                SENSOR_ADDRESS,
+                vec![
+                    super::Command::Initialize as u8,
+                    0b0000_1000, // 0x08
+                    0b0000_0000, // 0x00
+                ],
+            ),
+            // One more check_status will be called, this time with the 4th bit set
+            // to 1 - signifying the sensor is now calibrated and we can finish the init.
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        assert_eq!(aht20.initialized, false);
+        aht20.init(&mut mock_delay).unwrap();
+
+        assert_eq!(aht20.initialized, true);
         let mut mock = aht20.destroy().i2c;
         mock.done(); // verify expectations
     }

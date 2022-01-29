@@ -163,15 +163,8 @@ fn main() -> ! {
         // function parameter, rather than embed it in the aht20? That way we'd not hold on to
         // it. Is that why the lcd takes it as a param? Might well be!
         // Commit this way, then try to move the delay into a function param.
-        // let mut aht20_dev = aht20_driver::AHT20::new(
-        //     i2c_bus.acquire_i2c(),
-        //     aht20_driver::SENSOR_ADDRESS,
-        //     &mut delay,
-        // );
-        // aht20_dev.init().unwrap();
         let aht20_measurement = aht20_dev.measure(&mut delay).unwrap();
         rprintln!("aht20_measurement: {:?}", aht20_measurement);
-        // aht20_dev.destroy();
 
         let press = lps25hb.read_pressure().unwrap();
         let lps25_temp = lps25hb.read_temperature().unwrap();
