@@ -130,15 +130,12 @@ fn main() -> ! {
     // Configure the ahl20 temperature and humidity sensor
     // FIXME: OK, we need to write our own because:
     //   * we can't share the delay - we need to take a reference to delay instead
+    //   * NOTE: actually, not only that, we need to take it in the functions as a param.
     //   * the driver is agpl, but it's a library... not a good match.
-    //   * it's blocking - see if we can't make a non-blocking one, see PR to driver.
     //   * it'll be fun! You've only done this guided before.
     let mut aht20_dev = aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS);
+    // TODO: error handling, this is your own driver...
     aht20_dev.init(&mut delay).unwrap();
-    let status = aht20_dev.check_status().unwrap();
-    rprintln!("aht20 status: {:?}, ready: {}, calibrated: {}", status, status.is_ready(), status.is_calibrated());
-    let measurement = aht20_dev.measure(&mut delay).unwrap();
-    rprintln!("measurement: {:?}", measurement);
 
     loop {
         // Read temperature and pressure.  We can't rely on the lps25 temperature sensor for actual
@@ -163,23 +160,24 @@ fn main() -> ! {
         // function parameter, rather than embed it in the aht20? That way we'd not hold on to
         // it. Is that why the lcd takes it as a param? Might well be!
         // Commit this way, then try to move the delay into a function param.
+        // TODO: error handling on measure.
         let aht20_measurement = aht20_dev.measure(&mut delay).unwrap();
-        rprintln!("aht20_measurement: {:?}", aht20_measurement);
-
-        let press = lps25hb.read_pressure().unwrap();
-        let lps25_temp = lps25hb.read_temperature().unwrap();
+        let lps25_pressure = lps25hb.read_pressure().unwrap();
+        let lps25_temperature = lps25hb.read_temperature().unwrap();
 
         lcd.clear(&mut delay).unwrap();
-        let hpa_str = alloc::format!("{:.1} hPa", press);
+        let hpa_str = alloc::format!("{:.1} hPa", lps25_pressure);
         let temp_str = alloc::format!("{:.2}C", aht20_measurement.temperature);
 
         lcd.write_str(&hpa_str, &mut delay).unwrap();
         lcd.set_cursor_pos(40, &mut delay).unwrap(); // Move to 2nd row.
         lcd.write_str(&temp_str, &mut delay).unwrap();
 
-        rprintln!("pressure (lps25): {:.1} hPa", press);
-        rprintln!("temperature (lps25): {:.2}C", lps25_temp);
+        rprintln!("pressure (lps25): {:.1} hPa", lps25_pressure);
+        rprintln!("temperature (lps25): {:.2}C", lps25_temperature);
         rprintln!("temperature (aht20): {:.2}C", aht20_measurement.temperature);
+        rprintln!("humidity (aht20): {:.2}%", aht20_measurement.humidity);
+        rprintln!("--");
 
         // Blink the Blue Pill's onboard LED to show liveness.
         delay.delay_ms(1_000_u16);
