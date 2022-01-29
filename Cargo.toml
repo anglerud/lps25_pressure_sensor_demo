@@ -1,34 +1,5 @@
-[package]
-name = "lps25_barometer"
-version = "0.1.0"
-authors = ["Rikard Anglerud <rikard@anglerud.com>"]
-description = "Base binary crate for STM32F103 Blue Pill boards"
-categories = ["embedded", "no-std"]
-edition = "2018"
-
-[dependencies]
-cortex-m = "0.6.2"
-cortex-m-rt = "0.6.12"
-alloc-cortex-m = "0.4.1"
-panic-rtt-target = { version = "0.1.0", features = ["cortex-m"] }
-embedded-hal = "0.2.4"
-nb = "1.0.0"
-rtt-target = { version = "0.2.0", features = ["cortex-m"] }
-lps25hb = "0.0.4"
-shared-bus = "0.2.2"
-hd44780-driver = "0.4.0"
-
-
-[dependencies.stm32f1xx-hal]
-version = "0.6.1"
-features = ["rt", "stm32f103", "medium"]
-
-[[bin]]
-name = "lps25_barometer"
-test = false
-bench = false
-
-[profile.release]
-lto = true
-codegen-units = 1
-debug = true
+[workspace]
+members = [
+    "aht20-driver",
+    "lps_25_pressure_sensor_demo",
+]

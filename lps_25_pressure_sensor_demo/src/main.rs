@@ -16,18 +16,13 @@ extern crate alloc;
 use alloc_cortex_m::CortexMHeap;
 
 // This is the "Real Time Terminal" support for the debugger. I'm using an ST-Link V2 clone.
-use rtt_target::{rprintln, rtt_init_print};
 use panic_rtt_target as _;
+use rtt_target::{rprintln, rtt_init_print};
 
 // The Blue Pill's HAL crate imports.
-use stm32f1xx_hal::{
-    delay,
-    i2c,
-    prelude::*,
-    pac,
-};
 use cortex_m_rt::entry;
 use embedded_hal::digital::v2::OutputPin;
+use stm32f1xx_hal::{delay, i2c, pac, prelude::*};
 
 // Shared-bus lets us use multiple I2C devices on the same I2C bus.
 use shared_bus;
@@ -36,15 +31,17 @@ use shared_bus;
 use hd44780_driver::{Cursor, CursorBlink, Display, DisplayMode, HD44780};
 
 // Pressure sensor - LPS25 - breakout board by Adafruit
+use lps25hb::interface::{i2c::I2cAddress, I2cInterface};
 use lps25hb::*;
-use lps25hb::interface::{I2cInterface,
-    i2c::I2cAddress};
 
 const LCD_I2C_ADDRESS: u8 = 0x27;
 
+// Temperature (and humidity) sensor.
+use aht20_driver;
+// use aht20;
+
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
-
 
 #[entry]
 fn main() -> ! {
@@ -116,8 +113,9 @@ fn main() -> ! {
             cursor_visibility: Cursor::Visible,
             cursor_blink: CursorBlink::On,
         },
-        &mut delay
-    ).unwrap();
+        &mut delay,
+    )
+    .unwrap();
 
     // configure I2C interface for the LPS25HB driver.
     let i2c_interface = I2cInterface::init(i2c_bus.acquire_i2c(), I2cAddress::SA0_VCC);
@@ -129,26 +127,56 @@ fn main() -> ! {
     lps25hb.bdu_enable(true).unwrap();
     lps25hb.set_datarate(ODR::_1Hz).unwrap();
 
+    // Configure the ahl20 temperature and humidity sensor
+    // FIXME: OK, we need to write our own because:
+    //   * we can't share the delay - we need to take a reference to delay instead
+    //   * the driver is agpl, but it's a library... not a good match.
+    //   * it's blocking - see if we can't make a non-blocking one, see PR to driver.
+    //   * it'll be fun! You've only done this guided before.
+    // let mut aht20_dev = aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS, &mut delay);
+    // aht20_dev.init().unwrap();
+    // let status = aht20_dev.check_status().unwrap();
+    // rprintln!("aht20 status: {:?}, ready: {}, calibrated: {}", status, status.is_ready(), status.is_calibrated());
+    // let measurement = aht20_dev.measure().unwrap();
+    // rprintln!("measurement: {:?}", measurement);
+
     loop {
-        // Read temperature and pressure.  We can't rely on the temperature sensor for actual
+        // Read temperature and pressure.  We can't rely on the lps25 temperature sensor for actual
         // temperature readings.  It shows 19.2C when the CO2 sensor says 25.9, and the DK internal
         // sensor says 27.25. ST's website only advertises it as a pressure sensor and doesn't
         // mention the thermometer at all. I think it's just there to switch between different
         // profiles based on very coarse-grained temperature bands.
         // We print out the read temperature, but don't display it on the LCD panel.
-        let temp = lps25hb.read_temperature().unwrap();
+        //
+        // Here, we can get a measurement if we create, then destroy the sensor! That works because
+        // then we release the delay device. This really sucks. We *could* take the delay as a
+        // function parameter, rather than embed it in the aht20? That way we'd not hold on to
+        // it. Is that why the lcd takes it as a param? Might well be!
+        // Commit this way, then try to move the delay into a function param.
+        let mut aht20_dev = aht20_driver::AHT20::new(
+            i2c_bus.acquire_i2c(),
+            aht20_driver::SENSOR_ADDRESS,
+            &mut delay,
+        );
+        aht20_dev.init().unwrap();
+        let aht20_measurement = aht20_dev.measure().unwrap();
+        rprintln!("aht20_measurement: {:?}", aht20_measurement);
+        aht20_dev.destroy();
+
         let press = lps25hb.read_pressure().unwrap();
+        let lps25_temp = lps25hb.read_temperature().unwrap();
 
         lcd.clear(&mut delay).unwrap();
         let hpa_str = alloc::format!("{:.1} hPa", press);
-        // hecto is a bit of an odd size, also display is KiloPascal.
-        let kpa_str = alloc::format!("{:.2} kPa", press / 10.0);
+        let temp_str = alloc::format!("{:.2}C", aht20_measurement.temperature);
 
         lcd.write_str(&hpa_str, &mut delay).unwrap();
-        lcd.set_cursor_pos(40, &mut delay).unwrap();  // Move to 2nd row.
-        lcd.write_str(&kpa_str, &mut delay).unwrap();
+        lcd.set_cursor_pos(40, &mut delay).unwrap(); // Move to 2nd row.
+        lcd.write_str(&temp_str, &mut delay).unwrap();
 
-        rprintln!("temperature: {:.1} C, pressure: {:.1} hPa", temp, press);
+        rprintln!("pressure (lps25): {:.1} hPa", press);
+        rprintln!("temperature (lps25): {:.2}C", lps25_temp);
+        rprintln!("temperature (aht20): {:.2}C", aht20_measurement.temperature);
 
         // Blink the Blue Pill's onboard LED to show liveness.
         delay.delay_ms(1_000_u16);
