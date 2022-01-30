@@ -83,9 +83,19 @@
 // * submit driver and blog to embedded awesome
 // * submit driver and blog to /r/rust
 // * submit driver and blog to rust discourse
+// NOTE for blog: praise embedded-hal-mock, and especially the
+//      i2c mocking - really easy, clear error messages.
+// NOTE: we could make init return a new struct which has the
+//       measure methods on, and *remove* the measure methods
+//       from the AHT20 struct. That way you *couldn't* call
+//       the wrong methods at all. Makes tracking initialized
+//       much easier! I like that a lot.
 use crc_any::CRCu8;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::blocking::i2c;
+
+// TODO: delete
+// use rtt_target::rprintln;
 
 /// AHT20 I2C address
 pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
@@ -186,6 +196,7 @@ pub enum Status {
 //          be very confused - and also incomplete. For example, there's no implementation
 //          of anything but blocking for the hal I'm using.
 
+// TODO: docstring
 #[derive(Debug, Clone, Copy)]
 pub struct SensorStatus(pub u8);
 
@@ -210,6 +221,7 @@ impl SensorStatus {
     }
 }
 
+// TODO: docstring
 #[derive(Debug, Clone, Copy)]
 pub struct SensorReading {
     pub humidity: f32,
@@ -238,13 +250,17 @@ impl SensorReading {
         // let humidity_bytes: &[u8] = &sensor_data[..2];
         // let humidity_temperature_byte: u8 = sensor_data[2];
         // let temperature_bytes: &[u8] = &sensor_data[3..5];
+        // clearly wrong - especially that "humidity_temperature_byte"
+
+        // Our five bytes of sensor data is split into 20 bits (two and a half bytes) humidity and
+        // 20 bits temperature. We'll have to spend a bit of time splitting the middle byte up.
         let humidity_bytes: &[u8] = &sensor_data[..2];
         let split_byte: u8 = sensor_data[2];
         let temperature_bytes: &[u8] = &sensor_data[3..5];
 
         // We have a byte that might look like 0x0101_1010, we want only the first four bits, (the
         // 0101) to be at the end of the byte. So we shift them four right and end up with
-        // 0x0000_0101. These 4 bits go at the very end of our humidity value.
+        // 0x0000_0101. These 4 bits go at the very end of our 20-bit humidity value.
         // In the final 32-bit value they're these ones: 0x0000_0000_0000_0000_0000_0000_0000_1111
         let right_bits_humidity: u32 = (split_byte >> 4).into();
         // In the final 32-bit value they're these ones: 0x0000_0000_0000_1111_1111_0000_0000_0000
@@ -254,16 +270,17 @@ impl SensorReading {
         // We combine them to form the complete 20 bits: 0x0000_0000_0000_1111_1111_1111_1111_1111
         let humidity_val: u32 = left_bits_humidity | middle_bits_humidity | right_bits_humidity;
 
-        // Then from section 6.1 "Relative humidity transformation" here is how we turn this into
+        // From section 6.1 "Relative humidity transformation" here is how we turn this into
         // a relative humidity percantage value.
         let humidity_percent = (humidity_val as f32) / ((1 << 20) as f32) * 100.0;
 
-        // That same byte - we want to keep only the last four bits, so we mask the first four and
-        // end up with 0x0000_1010. These bits end up at the very start of our temperature value.
-        // In the final 32-bit value they're these ones: 0x0000_0000_0000_1111_0000_0000_0000_0000
-        // To get them into their final position - we'll left-shift them 16 times.
+        // With that same example byte - we want to keep only the last four bits this time, so we
+        // mask the first four and end up with 0x0000_1010. These bits end up at the very start of
+        // our 20-bit temperature value. In the final 32-bit value they're these ones:
+        // 0x0000_0000_0000_1111_0000_0000_0000_0000 To get them into their final position - we'll
+        // left-shift them by 16 positions.
         let split_byte_temperature: u32 = (split_byte & 0b0000_1111).into();
-        // So, we need to fill the rightmost 20 bits, starting with our split byte
+        // We need to fill the rightmost 20 bits, starting with our split byte
         // In the final 32-bit value they're these ones: 0x0000_0000_0000_1111_0000_0000_0000_0000
         let left_bits_temp: u32 = (split_byte_temperature << 16).into();
         // In the final 32-bit value they're these ones: 0x0000_0000_0000_0000_1111_1111_0000_0000
@@ -274,7 +291,7 @@ impl SensorReading {
         // We combine them to form the complete 20 bits: 0x0000_0000_0000_1111_1111_1111_1111_1111
         let temperature_val: u32 = left_bits_temp | middle_bits_temp | right_bits_temp;
 
-        // Then from section 6.2 "Temperature transformation" here is how we turn this into
+        // From section 6.2 "Temperature transformation" here is how we turn this into
         // a temprature in °C.
         let temperature_celcius = (temperature_val as f32) / ((1 << 20) as f32) * 200.0 - 50.0;
 
@@ -283,6 +300,15 @@ impl SensorReading {
             temperature: temperature_celcius,
         }
     }
+}
+
+/// A driver error
+#[derive(Debug, PartialEq)]
+pub enum Error<E> {
+    /// I2C bus error
+    I2c(E),
+    /// CRC validation failed
+    InvalidCrc,
 }
 
 // NOTE: for blog. This was my initial definition, but this doesn't
@@ -305,6 +331,22 @@ impl SensorReading {
 //     initialized: bool,
 // }
 
+// TODO: Create AHT20Initialized, have it
+//       take the AHT20 struct? That reduces dupliateion.
+//       But we might have to make some things public?
+//       *or* do we? Can one return a private struct?
+//       Find out and try it! OTOH having more than one
+//       public stuct doesn't seem like a problem.
+//       I think the above approach if we can.
+//       The goal is to make an API that one can't get wrong,
+//       such as measuring before init. It'll make error handling
+//       easier as well.
+//
+//       OR shall we destroy
+//       the AHT20 and create a *new* struct with the
+//       newly liberated i2c instance?
+//       That might have to duplicate check_status?
+
 /// An AHT20 sensor on the I2C bus `I`.
 pub struct AHT20<I>
 where
@@ -313,15 +355,6 @@ where
     i2c: I,
     address: u8,
     initialized: bool,
-}
-
-/// A driver error
-#[derive(Debug, PartialEq)]
-pub enum Error<E> {
-    /// I2C bus error
-    I2c(E),
-    /// CRC validation failed
-    InvalidCrc,
 }
 
 impl<E, I> AHT20<I>
@@ -338,7 +371,7 @@ where
         }
     }
 
-    /// Runs the AHT20 init and calibration routines.
+    /// Run the AHT20 init and calibration routines.
     ///
     /// This must be called before any other methods except `check_status`. This method will take
     /// *at least* 40ms to return.
@@ -372,6 +405,7 @@ where
     }
 
     // Send CheckStatus, read one byte back.
+    // TODO: better docstring
     pub fn check_status(&mut self) -> Result<SensorStatus, Error<E>> {
         let command: [u8; 1] = [Command::CheckStatus as u8];
         let mut read_buffer = [0u8; 1];
@@ -388,6 +422,7 @@ where
     // Initialize = 0b1011_1110, // 0xBE, Section 5.3, page 8, Table 9
     //       This command takes two bytes of parameter.
     //       0b0000_1000 (0x08), then 0b0000_0000 (0x00).
+    // TODO: better docstring
     pub fn send_initialize(&mut self) -> Result<(), Error<E>> {
         // Send CheckStatus, read one byte back.
         let command: [u8; 3] = [
@@ -407,6 +442,7 @@ where
     // TriggerMeasurement = 0b1010_1100, // 0xAC, Section 5.3, page 8, Table 9
     //       This command takes two bytes of parameter.
     //       0b00110011 (0x33), then 0b0000_0000 (0x00).
+    // TODO: better docstring.
     pub fn send_trigger_measurement(&mut self) -> Result<(), Error<E>> {
         // Send TriggerMeasurement, read nothing back.
         let command: [u8; 3] = [
@@ -453,9 +489,7 @@ where
     ///                  │
     ///                  ▼
     ///        Calc Humidity and Temp
-    /// FIXME: return a result with the right value
-    ///        Also, should this return a Result, or just the
-    ///        temp value?
+    /// TODO: Update doctring.
     pub fn measure(
         &mut self,
         delay: &mut (impl DelayUs<u16> + DelayMs<u16>),
@@ -468,26 +502,21 @@ where
                         sb[0], sb[1], sb[2], sb[3], sb[4],
                     ]))
                 }
-                Err(Error::InvalidCrc) => panic!("CRC error"), // LOG the crc err!
-                Err(other) => return Err(other),               // does this need to be Err(other)?
+                Err(Error::InvalidCrc) => return Err(Error::InvalidCrc), // Q: Also log? How?
+                Err(other) => return Err(other),
             }
         }
     }
 
-    // XXX: OK, so we might not be able to return that specific a type
-    //      in the result? Check.
+    // TODO: docstring
     pub fn measure_once(
         &mut self,
         delay: &mut (impl DelayUs<u16> + DelayMs<u16>),
     ) -> Result<[u8; 5], Error<E>> {
-        // TODO: 1. check that we're initialized. That implies we're
-        //          also calibrated.
-        //       2. if not, return an Uninitialized error.
         self.send_trigger_measurement()?;
         delay.delay_ms(80_u16);
 
         // Wait for measurement to be ready
-        // TODO: also an is_busy? Makes the loop nicer?
         while !self.check_status()?.is_ready() {
             delay.delay_ms(1_u16);
         }
@@ -510,6 +539,10 @@ where
         let crc_byte: u8 = read_buffer[6];
 
         let crc = compute_crc(data);
+        // TODO: delete
+        // rprintln!("data: {:?}", data);
+        // rprintln!("crc_byte: {:?}", crc_byte);
+        // rprintln!("crc: {:?}", crc);
         if crc_byte != crc {
             return Err(Error::InvalidCrc);
         }
@@ -517,6 +550,8 @@ where
         // This is a little awkward, copying the bytes out, but it works.
         // Note that we're dropping the first byte, which is status, and byte
         // 7 which is the CRC.
+        // Q: If this was longer, how should we do this? We don't want to copy out
+        //    like 31 bytes like this. NOTE: Ask question in blog.
         Ok([data[1], data[2], data[3], data[4], data[5]])
     }
 
@@ -568,6 +603,8 @@ fn compute_crc(bytes: &[u8]) -> u8 {
     crc.get_crc()
 }
 
+// NOTE: for readme - show how to run the tests.
+// NOTE: also set up github actions to run these tests?
 #[cfg(test)]
 mod tests {
     use super::{Error, AHT20, SENSOR_ADDRESS};
@@ -579,12 +616,14 @@ mod tests {
     use embedded_hal_mock::i2c::Mock as I2cMock;
     use embedded_hal_mock::i2c::Transaction;
 
+    /// Test SensorStatus reporting being ready.
     #[test]
     fn sensorstatus_is_ready() {
         let status = super::SensorStatus::new(0x00);
         assert_eq!(status.is_ready(), true);
     }
 
+    /// Test SensorStatus reporting being busy.
     #[test]
     fn sensorstatus_is_not_ready() {
         // 8th bit being 1 signifies "busy"
@@ -593,6 +632,7 @@ mod tests {
         assert_eq!(status.is_ready(), false);
     }
 
+    /// Test SensorStatus reporting being calibrated.
     #[test]
     fn sensorstatus_is_calibrated() {
         // 4th bit being 1 signifies the sensor being calibrated.
@@ -601,18 +641,19 @@ mod tests {
         assert_eq!(status.is_calibrated(), true);
     }
 
+    /// Test SensorStatus reporting being uncalibrated.
     #[test]
     fn sensorstatus_is_not_calibrated() {
-        let status = super::SensorStatus::new(0x00);
+        let status = super::SensorStatus::new(0b0000_0000);
         assert_eq!(status.is_calibrated(), false);
     }
 
+    /// Test creating new AHT20 sensors.
+    ///
+    /// Test that we can create multiple AHT20 devices. We test this because it's one of the
+    /// measures of success for this driver.
     #[test]
-    fn test_aht20_new() {
-        // Test that we can create an AHT20 device, and that we can share a delay We test this,
-        // because it's one of the reasons we're making this driver, another one we looked at
-        // couldn't share a delay, making that driver the only one that could be used in a program,
-        // and I wanted two drivers active.
+    fn aht20_new() {
         // In the real app we'd used shared-bus to share the i2c bus between the two drivers, but
         // I think this is fine for a test.
         let mock_i2c_1 = I2cMock::new(&[]);
@@ -622,8 +663,9 @@ mod tests {
         let _aht20_2 = AHT20::new(mock_i2c_2, SENSOR_ADDRESS);
     }
 
+    /// Test sending the CheckStatus i2c command, and read a status byte back.
     #[test]
-    fn test_check_status() {
+    fn check_status() {
         let expectations = vec![
             Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
             // 4th bit being 1 signifies the sensor being calibrated.
@@ -640,8 +682,9 @@ mod tests {
         mock.done(); // verify expectations
     }
 
+    /// Test sending the i2c Initialize command.
     #[test]
-    fn test_send_initialize() {
+    fn send_initialize() {
         let expectations = vec![Transaction::write(
             SENSOR_ADDRESS,
             vec![
@@ -660,8 +703,11 @@ mod tests {
         mock.done(); // verify expectations
     }
 
+    /// Initialize sensor, with the sensor reporting calibrated immediately.
+    ///
+    /// No call to send_initialize will be required.
     #[test]
-    fn test_init_with_calibrated_sensor() {
+    fn init_with_calibrated_sensor() {
         // This test has check_status return an already calibrated sensor. This means
         // that send_initialize is not called.
         let expectations = vec![
@@ -682,8 +728,12 @@ mod tests {
         mock.done(); // verify expectations
     }
 
+    /// Initialize sensor, with a report of an uncalibrated sensor.
+    ///
+    /// The sensor will report being uncalibrated once, then after initialization the sensor will
+    /// report being calibrated.
     #[test]
-    fn test_init_with_uncalibrated_sensor() {
+    fn init_with_uncalibrated_sensor() {
         // This test has check_status return an uncalibrated sensor. With that, a call
         // to send_initialize is done to initialize and calibrate the sensor. A second
         // call to check_status verifies the new calibrated status.
@@ -718,49 +768,236 @@ mod tests {
         mock.done(); // verify expectations
     }
 
-    // #[test]
-    // fn firmware_version() {
-    //     let expectations = vec![
-    //         i2c::Transaction::write(SENSOR_ADDRESS, vec![0xD1, 0x00]),
-    //         i2c::Transaction::read(SENSOR_ADDRESS, vec![0x03, 0x42, 0xF3]),
-    //     ];
-    //     let mock = i2c::Mock::new(&expectations);
+    /// Test sending the i2c TriggerMeasurement command.
+    #[test]
+    fn send_trigger_measurement() {
+        let expectations = vec![Transaction::write(
+            SENSOR_ADDRESS,
+            vec![
+                super::Command::TriggerMeasurement as u8,
+                0b0011_0011, // 0x33
+                0b0000_0000, // 0x00
+            ],
+        )];
+        let mock_i2c = I2cMock::new(&expectations);
 
-    //     let mut scd30 = AHT20::init(mock);
-    //     let version = scd30.get_firmware_version().unwrap();
-    //     assert_eq!([3, 66], version);
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        aht20.send_trigger_measurement().unwrap();
 
-    //     let mut mock = scd30.destroy();
-    //     mock.done(); // verify expectations
-    // }
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
 
-    // #[test]
-    // fn firmware_version_bad_crc() {
-    //     let expectations = vec![
-    //         i2c::Transaction::write(SENSOR_ADDRESS, vec![0xD1, 0x00]),
-    //         // NOTE negated CRC byte in the response!
-    //         i2c::Transaction::read(SENSOR_ADDRESS, vec![0x03, 0x42, !0xF3]),
-    //     ];
-    //     let mock = i2c::Mock::new(&expectations);
+    /// Measure once, sensor reports ready at once.
+    ///
+    /// No wait is needed in this scenario.
+    #[test]
+    fn measure_once_immediately_ready() {
+        let expectations = vec![
+            // send_trigger_measurement
+            Transaction::write(
+                SENSOR_ADDRESS,
+                vec![
+                    super::Command::TriggerMeasurement as u8,
+                    0b0011_0011, // 0x33
+                    0b0000_0000, // 0x00
+                ],
+            ),
+            // check_status called. 4th bit set to to 1 - signifying the sensor is calibrated 8th
+            // bit set to 0 (not busy), signalling that a measurement is ready for us to read.
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+            // We can now read 7 bytes. status byte, 5 data bytes, crc byte.
+            // These are taken from a run of the sensor.
+            Transaction::read(
+                SENSOR_ADDRESS,
+                vec![
+                    0b0001_1100, //  28, 0x1c - ready, calibrated, and some mystery flags.
+                    //             bit 8 set to 0 is ready. bit 4 set is calibrated. bit 5
+                    //             and 3 are described as 'reserved'.
+                    0b0110_0101, // 101, 0x65 - first byte of humidity value
+                    0b1011_0100, // 180, 0xb4 - second byte of humidity vaue
+                    0b0010_0101, //  37, 0x25 - split byte. 4 bits humidity, 4 bits temperature.
+                    0b1100_1101, // 205, 0xcd - first full byte of temperature.
+                    0b0010_0110, //  38, 0x26 - second full byte of temperature.
+                    0b1100_0110, // 198, 0xc6 - CRC
+                ],
+            ),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
 
-    //     let mut scd30 = AHT20::init(mock);
-    //     let res = scd30.get_firmware_version();
-    //     assert_eq!(Err(Error::InvalidCrc), res);
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        aht20.measure_once(&mut mock_delay).unwrap();
 
-    //     scd30.destroy().done(); // verify expectations
-    // }
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
+
+    /// Measure once, with a wait inserted.
+    ///
+    /// We signal via check_status that a wait should be inserted before another attempt to read
+    /// data from the sensor is made.
+    #[test]
+    fn measure_once_wait_once() {
+        let expectations = vec![
+            // send_trigger_measurement
+            Transaction::write(
+                SENSOR_ADDRESS,
+                vec![
+                    super::Command::TriggerMeasurement as u8,
+                    0b0011_0011, // 0x33
+                    0b0000_0000, // 0x00
+                ],
+            ),
+            // check_status called. 4th bit set to to 1 - signifying the sensor is calibrated 8th
+            // bit set to 1 (busy), signalling that we should wait for the sensor.
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            Transaction::read(SENSOR_ADDRESS, vec![0b1000_1000]),
+            // Next time round, we say that the sensor is good to go.
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+            // We can now read 7 bytes. status byte, 5 data bytes, crc byte.
+            // These are taken from a run of the sensor.
+            Transaction::read(
+                SENSOR_ADDRESS,
+                vec![
+                    0b0001_1100, //  28, 0x1c - ready, calibrated, and some mystery flags.
+                    //             bit 8 set to 0 is ready. bit 4 set is calibrated. bit 5
+                    //             and 3 are described as 'reserved'.
+                    0b0110_0101, // 101, 0x65 - first byte of humidity value
+                    0b1011_0100, // 180, 0xb4 - second byte of humidity vaue
+                    0b0010_0101, //  37, 0x25 - split byte. 4 bits humidity, 4 bits temperature.
+                    0b1100_1101, // 205, 0xcd - first full byte of temperature.
+                    0b0010_0110, //  38, 0x26 - second full byte of temperature.
+                    0b1100_0110, // 198, 0xc6 - CRC
+                ],
+            ),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        aht20.measure_once(&mut mock_delay).unwrap();
+
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
+
+    // Single measurement pass with bad CRC.
+    //
+    // Intentionally corrupt the read data to make sure we get a CRC error.
+    #[test]
+    fn measure_once_bad_crc() {
+        let expectations = vec![
+            // send_trigger_measurement
+            Transaction::write(
+                SENSOR_ADDRESS,
+                vec![
+                    super::Command::TriggerMeasurement as u8,
+                    0b0011_0011, // 0x33
+                    0b0000_0000, // 0x00
+                ],
+            ),
+            // Check status, and  we say that the sensor is good to go.
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+            // We can now read 7 bytes. status byte, 5 data bytes, crc byte.
+            // These are taken from a run of the sensor.
+            Transaction::read(
+                SENSOR_ADDRESS,
+                vec![
+                    0b0001_1100, //  28, 0x1c - ready, calibrated, and some mystery flags.
+                    //             bit 8 set to 0 is ready. bit 4 set is calibrated. bit 5
+                    //             and 3 are described as 'reserved'.
+                    0b0110_0101, // 101, 0x65 - first byte of humidity value
+                    0b1011_0100, // 180, 0xb4 - second byte of humidity vaue
+                    0b0010_0101, //  37, 0x25 - split byte. 4 bits humidity, 4 bits temperature.
+                    0b1100_1101, // 205, 0xcd - first full byte of temperature.
+                    0b0010_0111, //  39, 0x27 - second full byte of temperature.
+                    //  NOTE: This should be 38, 0x26, but is intentionally corrupted
+                    //        so that the CRC won't match. Last bit flipped from 0 to 1.
+                    0b1100_0110, // 198, 0xc6 - CRC
+                ],
+            ),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        // test and verify
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        match aht20.measure_once(&mut mock_delay) {
+            Ok(_) => panic!("CRC is wrong and measure_once should not pass."),
+            Err(err_type) => assert_eq!(err_type, Error::InvalidCrc),
+        }
+
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
+
+    /// Test a measurement.
+    ///
+    /// This uses data from an actual sensor run.
+    #[test]
+    fn measure() {
+        // setup
+        let expectations = vec![
+            // send_trigger_measurement
+            Transaction::write(
+                SENSOR_ADDRESS,
+                vec![
+                    super::Command::TriggerMeasurement as u8,
+                    0b0011_0011, // 0x33
+                    0b0000_0000, // 0x00
+                ],
+            ),
+            // check_status - with ready bit set to 'ready' (off)
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+            // We can now read 7 bytes. status byte, 5 data bytes, crc byte.
+            // These are taken from a run of the sensor.
+            Transaction::read(
+                SENSOR_ADDRESS,
+                vec![
+                    0b0001_1100, //  28, 0x1c - ready, calibrated, and some mystery flags.
+                    //             bit 8 set to 0 is ready. bit 4 set is calibrated. bit 5
+                    //             and 3 are described as 'reserved'.
+                    0b0110_0101, // 101, 0x65 - first byte of humidity value
+                    0b1011_0100, // 180, 0xb4 - second byte of humidity vaue
+                    0b0010_0101, //  37, 0x25 - split byte. 4 bits humidity, 4 bits temperature.
+                    0b1100_1101, // 205, 0xcd - first full byte of temperature.
+                    0b0010_0110, //  38, 0x26 - second full byte of temperature.
+                    0b1100_0110, // 198, 0xc6 - CRC
+                ],
+            ),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        // test
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        let measurement = aht20.measure(&mut mock_delay).unwrap();
+
+        // verification
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+
+        // Temp was ~22.5C and humidity ~40% when above data taken.
+        assert!(measurement.temperature > 22.0 && measurement.temperature < 23.0);
+        assert!(measurement.humidity > 39.0 && measurement.humidity < 41.0);
+    }
 
     #[test]
     fn crc_correct() {
-        // example from the Interface Specification document
+        // Example from the Interface Specification document.
         assert_eq!(super::compute_crc(&[0xBE, 0xEF]), 0x92);
     }
 
     #[test]
     fn crc_wrong() {
-        // changed example from the Interface Specification document
-        // This should not match - the bytes going in are changed from
-        // the known good values, but the expected result is the same.
+        // Changed example from the Interface Specification document. This should not match - the
+        // bytes going in are changed from the known good values, but the expected result is the
+        // same.
         assert_ne!(super::compute_crc(&[0xFF, 0xFF]), 0x92);
     }
 }
