@@ -14,6 +14,8 @@
 //!       and TriggerMeasurement takes 2 bytes parameters: 0x33 0x00
 //! NOTE: For blog - need to run with --release.
 //!       OR I guess we could set up a debug profile?
+//! NOTE: For blog - some of the datasheet is like poetry - the "Initialization" command has a
+//!       definition "Keep main engine".
 //!
 //! A successful TriggerMeasurement command lets you read 6 bytes of data back.
 //! 2 bytes humidity data, 1 byte humidity temperature, 2 bytes temperature data then 1 byte of
@@ -71,10 +73,12 @@
 //! ```
 
 // TODO:
-// * implement SoftReset
-// * more tests
 // * check initialized in more places and return an error
 //   if not. New variant in error enum for that (also test it).
+//   NO - split driver struct into two and make it impossible
+//   to get wrong.
+// * Docstrings
+// * Transfer notes out into blog article
 // * split into independent crate and push to staging repo
 // * push 0.0.1 to real repo
 // * use in the lps25_demo... app.
@@ -459,6 +463,22 @@ where
         Ok(())
     }
 
+    // TODO: better docstring.
+    // SoftReset = 0b1011_1010, // 0xBA, Section 5.3, page 8, Table 9.
+    //                          //       Also see Section 5.5. This takes 20ms or less
+    //                          //       to complete.
+    pub fn send_soft_reset(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>> {
+        // Send SoftReset, read nothing back, wait 20ms.
+        let command: [u8; 1] = [ Command::SoftReset as u8, ];
+
+        self.i2c.write(self.address, &command).map_err(Error::I2c)?;
+        // The datasheet in section 5.5 says there is a guarantee that the reset time does
+        // not exceed 20ms.
+        delay.delay_ms(20_u16);
+
+        Ok(())
+    }
+
     /// Measure temperature (and humidity) once.
     ///
     /// Command::TriggerMeasurement (0xAC)   ◄─┐
@@ -764,6 +784,23 @@ mod tests {
         aht20.init(&mut mock_delay).unwrap();
 
         assert_eq!(aht20.initialized, true);
+        let mut mock = aht20.destroy().i2c;
+        mock.done(); // verify expectations
+    }
+
+    /// Test sending the i2c SoftReset command.
+    #[test]
+    fn send_soft_reset() {
+        let expectations = vec![Transaction::write(
+            SENSOR_ADDRESS,
+            vec![ super::Command::SoftReset as u8, ],
+        )];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        aht20.send_soft_reset(&mut mock_delay).unwrap();
+
         let mut mock = aht20.destroy().i2c;
         mock.done(); // verify expectations
     }

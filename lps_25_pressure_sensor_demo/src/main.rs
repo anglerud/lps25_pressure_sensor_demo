@@ -137,6 +137,10 @@ fn main() -> ! {
     // TODO: error handling, this is your own driver...
     aht20_dev.init(&mut delay).unwrap();
 
+    // This is just a real-life verifiation that soft_reset does not misbehave.
+    // It is not required at all.
+    let _ = aht20_dev.send_soft_reset(&mut delay).unwrap();
+
     loop {
         // Read temperature and pressure.  We can't rely on the lps25 temperature sensor for actual
         // temperature readings. Current sensor spread (all on the same desk):
