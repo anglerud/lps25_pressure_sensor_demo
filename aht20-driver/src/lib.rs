@@ -3,28 +3,14 @@
 //! https://github.com/adafruit/Adafruit_CircuitPython_AHTx0/blob/main/adafruit_ahtx0.py inspration
 //! AHT20 Datasheet: https://cdn-learn.adafruit.com/assets/assets/000/091/676/original/AHT20-datasheet-2020-4-16.pdf?1591047915
 //!
-//! This is how I believe how we get a measurement. This does not include the Command:Calibrate or
-//! Command::SoftReset. For Calibrate, I image you go to Command::Init in this chart. For SoftReset
-//! go to Start.
-//! XXX: TO figure out - after TriggerMeasurement - do we just read a byte
-//!      which then comes back with a status - and continue to wait... or do we
-//!      issue CheckStatus? The docs seem to indicate that we just keep reading
-//!      bytes until Busy goes to no and then read another 6 bytes?
-//! NOTE: That Initialize takes 2 bytes parameters: 0x08 0x00,
-//!       and TriggerMeasurement takes 2 bytes parameters: 0x33 0x00
-//! NOTE: For blog - need to run with --release.
-//!       OR I guess we could set up a debug profile?
-//! NOTE: For blog - some of the datasheet is like poetry - the "Initialization" command has a
-//!       definition "Keep main engine".
+//! Note that the datasheet linked from http://www.aosong.com/en/products-32.html is an older
+//! datasheet (version 1.0, rather than version 1.1 as linked above) and is significantly more
+//! difficult to understand. I recommend reading version 1.1. All section references in this file
+//! are to the 1.1 version.
 //!
-//! A successful TriggerMeasurement command lets you read 6 bytes of data back.
-//! 2 bytes humidity data, 1 byte humidity temperature, 2 bytes temperature data then 1 byte of
-//! CRC.
-//!
-//! To calculate Relative Humidity: (humidity data / 2**20) * 100
-//! To calculate Temp in C: (temp data / 2**20) * 200 - 50
-//!
-//! Note that there is no mention of what "Humidity temperature" is used for.
+//! The below is a flowchart of how to initialize and get measurements from the AHT20.
+//! Note that the flowchart does not include the parameters that you need to give to
+//! some commands, and it also doesn't include the SoftReset command flow.
 //!
 //! ```text
 //!           Start (Power on)
@@ -33,22 +19,22 @@
 //!              Wait 40 ms
 //!                  │
 //!                  ▼
-//!   Command::CheckStatus (0x71)   ◄───    Wait 10 ms
+//!   Command::CheckStatus          ◄───    Wait 10 ms
 //!                  │                           ▲
 //!                  ▼                           │
-//!          Status::Calibrated ──► No ──► Command::Initialize (0xBE)
+//!          Status::Calibrated ──► No ──► Command::Initialize
 //!                  │
 //!                  ▼
 //!                 Yes
 //!                  │
 //!                  ▼
-//! Command::TriggerMeasurement (0xAC)   ◄─┐
+//! Command::TriggerMeasurement          ◄─┐
 //!                  │                     │
 //!                  ▼                     │
 //!             Wait 80 ms                 │
 //!                  │                     │
 //!                  ▼                     │
-//!   Command::CheckStatus (0x71) ◄──┐     │
+//!   Command::CheckStatus        ◄──┐     │
 //!                  │               │     │
 //!                  ▼               │     │
 //!             Status::Busy  ───►  Yes    │
@@ -73,11 +59,10 @@
 //! ```
 
 // TODO:
-// * check initialized in more places and return an error
-//   if not. New variant in error enum for that (also test it).
-//   NO - split driver struct into two and make it impossible
+//   split driver struct into two, one to initialize,
+//   and one to measure. That will make it impossible
 //   to get wrong.
-// * Docstrings
+// * More and better Docstrings
 // * Transfer notes out into blog article
 // * split into independent crate and push to staging repo
 // * push 0.0.1 to real repo
@@ -87,8 +72,6 @@
 // * submit driver and blog to embedded awesome
 // * submit driver and blog to /r/rust
 // * submit driver and blog to rust discourse
-// NOTE for blog: praise embedded-hal-mock, and especially the
-//      i2c mocking - really easy, clear error messages.
 // NOTE: we could make init return a new struct which has the
 //       measure methods on, and *remove* the measure methods
 //       from the AHT20 struct. That way you *couldn't* call
@@ -104,14 +87,19 @@ use embedded_hal::blocking::i2c;
 /// AHT20 I2C address
 pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
 
-///  
+/// Commands that can be sent to the AHT20 sensor.
+///
+/// Note that a few of these take parameters, but that there is no explanation provided about what
+/// those parameters actually are. You should consider the command and specified parameters to be
+/// just one three-byte command.
+/// These can be found in the datasheet, Section 5.3, page 8, Table 9
 pub enum Command {
-    CheckStatus = 0b0111_0001, // 0x71, Get a byte of status word. You can use this
-    //       on startup to check if you need to send the
-    //       Initialize command. Check Status::Calibrated.
-    //       If the calibration status bit (4th bit) is not
-    //       1, you need to send Command::Initialize.
-    Initialize = 0b1011_1110, // 0xBE, Section 5.3, page 8, Table 9
+    CheckStatus = 0b0111_0001, // 0x71, Get a byte of status word. There are two usages for the
+    // CheckStatus command. You can use this on startup to check if you need to send the Initialize
+    // command. Use Status::Calibrated to see if the Initialize should be sent.
+    // You can also use this after a TriggerMeasurement to see if data is ready to be read. If
+    // Status::Busy is returned, you need to wait longer before reading the data back.
+    Initialize = 0b1011_1110, // 0xBE,
     //       This command takes two bytes of parameter.
     //       0b0000_1000 (0x08), then 0b0000_0000 (0x00).
     Calibrate = 0b1110_0001, // 0xE1, Calibrate - or return calibration status.
@@ -131,10 +119,6 @@ pub enum Command {
                              //       to complete.
 }
 
-// TODO: Use https://github.com/unrelentingtech/ldc1x1x/blob/trunk/src/data.rs#L63 pattern to
-// represent the status! That looks really nice. So make the struct a tuple with one 8-bit word.
-// Then functions to get the status! data_ready() -> bool, and calibrated() -> bool for example.
-// const STATUS_BUSY: u8 0x80  // Status bit for busy
 pub enum Status {
     Busy = 0b1000_0000, // Status bit for busy - 8th bit enabled. 1<<7, 0x80
     //   1 is Busy measuring. 0 is "Free in dormant state"
@@ -145,60 +129,6 @@ pub enum Status {
                               //   Table 10, page 8 of the datasheet.
 }
 
-// TODO: create a struct that represents the measurement,
-// QUESTION: Make  AHL20 take a Delay? A reference to a delay possibly.
-// NOTE: for blog - learning about the nb crate - a bit surprising. It's on the
-//       front page of the hal docs, but I'd not really seen it in examples or
-//       crates I'd read before.
-//       Example doesn't really show how to use it in a driver - how would I
-//       wait? The spec for this says to wait Nms - but how do I enforce that
-//       in my driver? I don't want to just make it a comment.
-//       Er, like... do I keep state in the struct, then return wouldblock or
-//       something? How do I time?
-//       - The docs are very brief, and I think aimed at someone who is already
-//         an experienced embedded dev, or already knows the ecosystem.
-//       - For example "Application specific errors can be put inside the Other variant in the
-//       nb::Error enum." - what? I don't understand this at all.
-//       OK, so there isn't much code in there at all, but that still leaves me
-//       a bit mystified about how it's intended to be used.
-// NOTE: OK, so yes I think in order to use nb I'd have to store an 'is_reading' and
-//       `is_waiting` bool for a state machine, and a timestamp from a timer or delay or
-//       something.
-//       Then the caller would have to call nb::block!() and busy-spin or whatever.
-// For blog: point out that I don't understand how this would work if not blocking
-// really, and how that'd turn into async ever. I've probably not understood.
-// I guess we could use timer::CountDown
-// OK, and finally - we're using blocking::i2c - so we don't need the non-blocking
-// mode.
-// In fact, I don't even see an implementation for i2c in stm32f1xx_hal that isn't
-// i2c.blocking. So, is it even possible? All in all, being pointed to the `nb` crate
-// right away took me on a very confusing journey - the end result which is... I think,
-// that at least with the hal implementation I'm going to use this with, there isn't
-// support to do i2c non-blocking anyway, so I don't need to try.
-// TODO: Create a new crate for this! Then refer to that crate as a git or path link
-//       in the demo's crate manifest.
-//
-// TODO: Use timer::CountDown, and the timer::CountDownTimer<SYST> (reference) (concrete)
-//       for the pausing - and then block!(cdt.wait())
-//       Must definitely be a reference so that we don't go owning the timer or syst.
-//       BUT, that seems like an easy way to do this?
-// NOTE: for blog - also mention that the distinction between a Delay and a CountDown
-//       is kinda fuzzy.
-//       https://docs.rs/embedded-hal/latest/embedded_hal/timer/trait.CountDown.html
-//       No, actually it's clear:
-//       https://docs.rs/embedded-hal/latest/embedded_hal/blocking/delay/index.html
-//       delay is *only* blocking. As we're going to be only blocking, I guess we should
-//       go for this one. After all, only blocking i2c is available.
-// NOTE: for blog - OK, so after I've gone off and read about nb and become confused,
-//       there's actually some useful stuff on the embedded-hal front page about using
-//       nb in async - including a little loop that polls forever!
-//       The examples use the try_nb! macro, and I can't see that in the code or docs?
-//       Where does that come from?
-// INSIGHT: it's really valuable to know that the hal stuff is *very* split between
-//          blocking and non-blocking. That makes it a lot easier to understand - and should
-//          probably be pointed out earlier. Also that the non-blocking story appears to
-//          be very confused - and also incomplete. For example, there's no implementation
-//          of anything but blocking for the hal I'm using.
 
 // TODO: docstring
 #[derive(Debug, Clone, Copy)]
@@ -234,28 +164,6 @@ pub struct SensorReading {
 
 impl SensorReading {
     pub fn from_bytes(sensor_data: [u8; 5]) -> Self {
-        // NOTE: for the blog article. TOTALLY not clear how to get two values out of 5 bytes. The
-        // middle byte was noted as "Humidity temperature", which I assumed was a third value of
-        // some kind and ended up googling about what that could mean with no results. Nowhere
-        // in the docs was a "humidity temperature" mentioned, but it sort of made sense to me
-        // that it could be a concept as humidity and temperature have a relationship.
-        // BUT - in actuality it's a byte that gets *split*. It took a lot of poking aimlessly at
-        // it and getting nonsense results until section 6 "Signal Transformation" gave a clue -
-        // which is the dividing by 2^20 - as in "20 bits" two bytes (16 bits) plus a half byte (a
-        // nibble)! This is absolutely not clear from the datasheet, and it feels like solving a
-        // cryptic puzzle rather than reading a data sheet!
-        // Being a complete beginner at this - it also took some trial and error to generate
-        // a valid f32 from these at all! Masking out the top four bits in the split byte was
-        // somethig which took me some time to realize I had to do. All makes sense in retrospect,
-        // but definitely not immediately.
-        // I also spent a bunch of time messing around with f32::from_be_bytes and from_bits
-        // after googling around, but turns out that wasn't needed.
-        // I spent a lot of time in python just poking at this. At first I had:
-        // let humidity_bytes: &[u8] = &sensor_data[..2];
-        // let humidity_temperature_byte: u8 = sensor_data[2];
-        // let temperature_bytes: &[u8] = &sensor_data[3..5];
-        // clearly wrong - especially that "humidity_temperature_byte"
-
         // Our five bytes of sensor data is split into 20 bits (two and a half bytes) humidity and
         // 20 bits temperature. We'll have to spend a bit of time splitting the middle byte up.
         let humidity_bytes: &[u8] = &sensor_data[..2];
@@ -314,26 +222,6 @@ pub enum Error<E> {
     /// CRC validation failed
     InvalidCrc,
 }
-
-// NOTE: for blog. This was my initial definition, but this doesn't
-//   work because you can't use the delay functions in more than
-//   one place even if you send in a borrow. The delay's functions
-//   take &mut self, thus we need to make this a mutable reference.
-//   It's a bit of a shame, this is my first use of an explicit
-//   lifetime, and the functions all taking (&mut delay) looks
-//   pretty ugly! The LCD driver I use took this approach, and has
-//   clearly noticed the same.
-// /// An AHT20 sensor on the I2C bus `I`, with a Delay device `D`.
-// pub struct AHT20<'a, I, D>
-// where
-//     I: i2c::Read + i2c::Write,
-//     D: DelayUs<u16> + DelayMs<u16>,
-// {
-//     i2c: I,
-//     address: u8,
-//     delay: &'a mut D,
-//     initialized: bool,
-// }
 
 // TODO: Create AHT20Initialized, have it
 //       take the AHT20 struct? That reduces dupliateion.
@@ -545,8 +433,7 @@ where
         // status byte - which seems very redundant, as we have just been checking the status
         // above. However, it's there - but we can just ignore it. We can't get rid of it though
         // as it's part of the CRCd data. OK, being CRCd is an advantage though!
-        // NOTE: for the blog - At first I only did the data part, and stripped out the
-        //       status byte, thus got the wrong CRC value.
+        //
         // TODO OR: doublecheck the status byte - check for ready and calibrated again?
         // NOTE: So the CRC covers the status byte, which is nice I guess. So it could be
         //       a little more reliable? So I think we should use it.
@@ -571,7 +458,7 @@ where
         // Note that we're dropping the first byte, which is status, and byte
         // 7 which is the CRC.
         // Q: If this was longer, how should we do this? We don't want to copy out
-        //    like 31 bytes like this. NOTE: Ask question in blog.
+        //    like 31 bytes like this, right?
         Ok([data[1], data[2], data[3], data[4], data[5]])
     }
 
@@ -589,15 +476,10 @@ where
 /// Section 5.4.4:
 ///
 /// > CRC initial vaue is 0xFF, crc8 check polynomial CRC[7:0]=1+x**4 + x**5 + x**8
-/// NOTE for blog. "Those are certainly some words". I had no idea how to go from that
-///   description to parameters to put into the crc-any crate's functions. As I frequently
-///   do when faced with something I don't know, I started on Wikipedia.
 ///
 /// https://en.wikipedia.org/wiki/Cyclic_redundancy_check#Polynomial_representations_of_cyclic_redundancy_checks
 /// You can find it in the table on wikipedia, under "CRC-8-Dallas/Maxim", 1-Wire bus.
 ///
-/// NOTE: for blog. That wasn't actually that helpful. I found a likely magic value, but no
-///   idea why. A little more googling led me to an article which actually explains it.
 /// This article explains how we get from `CRC[7:0]=1 + x**4 + x**5 + x**8` to `0x31` as the hex
 /// representation: http://www.sunshine2k.de/articles/coding/crc/understanding_crc.html#ch72
 ///
@@ -615,23 +497,16 @@ where
 /// And, confirming that's right, this is what Knurling's test driver crate uses.
 /// https://github.com/knurling-rs/test-driver-crate-example/blob/main/src/lib.rs#L59
 /// which indicates this is either an I2C thing, or a common driver default as CRC parameters.
-/// NOTE: for blog. The above.
 fn compute_crc(bytes: &[u8]) -> u8 {
-    // Poly (0x31), bits (8), initial (0xff), final_xor (0x00), reflect (flase).
+    // Poly (0x31), bits (8), initial (0xff), final_xor (0x00), reflect (false).
     let mut crc = CRCu8::create_crc(0x31, 8, 0xff, 0x00, false);
     crc.digest(bytes);
     crc.get_crc()
 }
 
-// NOTE: for readme - show how to run the tests.
-// NOTE: also set up github actions to run these tests?
 #[cfg(test)]
 mod tests {
     use super::{Error, AHT20, SENSOR_ADDRESS};
-    // NOTE: For blog. Not having access to `use` things from the top
-    // of this file took a while to figure out. It's probably in the
-    // book, but so used to interior scopes having access to things from
-    // the outside.
     use embedded_hal_mock::delay::MockNoop as MockDelay;
     use embedded_hal_mock::i2c::Mock as I2cMock;
     use embedded_hal_mock::i2c::Transaction;
