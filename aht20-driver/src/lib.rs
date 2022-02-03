@@ -43,7 +43,7 @@
 //!                 No                     │
 //!                  │                     │
 //!                  ▼                     │
-//!             Read 6 bytes               │
+//!             Read 7 bytes               │
 //!                  │                     │
 //!                  ▼                     │
 //!             Calculate CRC              │
@@ -81,8 +81,6 @@ use crc_any::CRCu8;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::blocking::i2c;
 
-// TODO: delete
-// use rtt_target::rprintln;
 
 /// AHT20 I2C address
 pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
@@ -94,39 +92,31 @@ pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
 /// just one three-byte command.
 /// These can be found in the datasheet, Section 5.3, page 8, Table 9
 pub enum Command {
-    CheckStatus = 0b0111_0001, // 0x71, Get a byte of status word. There are two usages for the
-    // CheckStatus command. You can use this on startup to check if you need to send the Initialize
-    // command. Use Status::Calibrated to see if the Initialize should be sent.
-    // You can also use this after a TriggerMeasurement to see if data is ready to be read. If
-    // Status::Busy is returned, you need to wait longer before reading the data back.
-    Initialize = 0b1011_1110, // 0xBE,
-    //       This command takes two bytes of parameter.
-    //       0b0000_1000 (0x08), then 0b0000_0000 (0x00).
+    CheckStatus = 0b0111_0001, // 0x71, Get a byte of status word.
+    // There are two usages for the CheckStatus command. You can use this on startup to check if
+    // you need to send the Initialize command. Use Status::Calibrated to see if the Initialize
+    // should be sent.  You can also use this after a TriggerMeasurement to see if data is ready to
+    // be read. If Status::Busy is returned, you need to wait longer before reading the data back.
+    Initialize = 0b1011_1110, // 0xBE, Initialize and calibrate the sensor.
+    // This command takes two bytes of parameter: 0b0000_1000 (0x08), then 0b0000_0000 (0x00).
     Calibrate = 0b1110_0001, // 0xE1, Calibrate - or return calibration status.
-    //       Status will be Status::Calibrated, where
-    //       bit4 indicates calibrated. If it's 0, it's not.
-    TriggerMeasurement = 0b1010_1100, // 0xAC, Section 5.3, page 8, Table 9
-    //       This command takes two bytes of parameter.
-    //       0b00110011 (0x33), then 0b0000_0000 (0x00).
-    //       Wait 80ms for the measurement. You'll get a
-    //       status byte back. Check the status
-    //       for Status::Busy to be 0. If it is, then read
-    //       6 bytes (5 data plus a byte of CRC).
-    //       QUESTION: At this point we can *send* a byte
-    //       of CRC to get it verified? Secion 5.4.4 ?
-    SoftReset = 0b1011_1010, // 0xBA, Section 5.3, page 8, Table 9.
-                             //       Also see Section 5.5. This takes 20ms or less
-                             //       to complete.
+    // Status will be Status::Calibrated, where bit4 indicates calibrated. If it's 0, it's not.
+    TriggerMeasurement = 0b1010_1100, // 0xAC
+    // This command takes two bytes of parameter: 0b00110011 (0x33), then 0b0000_0000 (0x00).
+    // Wait 80ms for the measurement. You'll get a status byte back. Check the status for
+    // Status::Busy to be 0. If it is, then read 7 bytes. A status byte, 5 data plus a byte of CRC.
+    SoftReset = 0b1011_1010, // 0xBA
+    // Also see Section 5.5. This takes 20ms or less to complete.
 }
 
+/// Status byte meanings.
+///
+/// Table 10, page 8 of the datasheet.
 pub enum Status {
     Busy = 0b1000_0000, // Status bit for busy - 8th bit enabled. 1<<7, 0x80
-    //   1 is Busy measuring. 0 is "Free in dormant state"
-    //   Table 10, page 8 of the datasheet.
+    // 1 is Busy measuring. 0 is "Free in dormant state"
     Calibrated = 0b0000_1000, // Status bit for calibrated - 4th bit enabled. 1<<4, 0x08.
-                              //   1 is Calibrated, 0 is uncalibrated. If 0, send
-                              //   Command::Initialize (0xBE).
-                              //   Table 10, page 8 of the datasheet.
+    // 1 is Calibrated, 0 is uncalibrated. If 0, send Command::Initialize.
 }
 
 
@@ -283,7 +273,7 @@ where
     ///                 ▼
     ///                Yes
     /// ```
-    pub fn init(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>> {
+    pub fn init(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<AHT20Initialized<I>, Error<E>> {
         delay.delay_ms(40_u16);
 
         while !self.check_status()?.is_calibrated() {
@@ -293,7 +283,7 @@ where
 
         self.initialized = true;
 
-        Ok(())
+        Ok(AHT20Initialized{aht20: self})
     }
 
     // Send CheckStatus, read one byte back.
@@ -331,6 +321,25 @@ where
         Ok(())
     }
 
+    /// Destroys this driver and releases the I2C bus `I`
+    pub fn destroy(self) -> Self {
+        self
+    }
+}
+
+
+pub struct AHT20Initialized<'a, I>
+where
+    I: i2c::Read + i2c::Write,
+{
+    aht20: &'a mut AHT20<I>
+}
+
+
+impl<'a, E, I> AHT20Initialized<'a, I>
+where
+    I: i2c::Read<Error = E> + i2c::Write<Error = E>,
+{
     // TriggerMeasurement = 0b1010_1100, // 0xAC, Section 5.3, page 8, Table 9
     //       This command takes two bytes of parameter.
     //       0b00110011 (0x33), then 0b0000_0000 (0x00).
@@ -346,7 +355,7 @@ where
             0b0000_0000, // 0x00
         ];
 
-        self.i2c.write(self.address, &command).map_err(Error::I2c)?;
+        self.aht20.i2c.write(self.aht20.address, &command).map_err(Error::I2c)?;
 
         Ok(())
     }
@@ -359,7 +368,7 @@ where
         // Send SoftReset, read nothing back, wait 20ms.
         let command: [u8; 1] = [ Command::SoftReset as u8, ];
 
-        self.i2c.write(self.address, &command).map_err(Error::I2c)?;
+        self.aht20.i2c.write(self.aht20.address, &command).map_err(Error::I2c)?;
         // The datasheet in section 5.5 says there is a guarantee that the reset time does
         // not exceed 20ms.
         delay.delay_ms(20_u16);
@@ -384,7 +393,7 @@ where
     ///                 No                     │
     ///                  │                     │
     ///                  ▼                     │
-    ///             Read 6 bytes               │
+    ///             Read 7 bytes               │
     ///                  │                     │
     ///                  ▼                     │
     ///             Calculate CRC              │
@@ -425,7 +434,7 @@ where
         delay.delay_ms(80_u16);
 
         // Wait for measurement to be ready
-        while !self.check_status()?.is_ready() {
+        while !self.aht20.check_status()?.is_ready() {
             delay.delay_ms(1_u16);
         }
 
@@ -438,27 +447,21 @@ where
         // NOTE: So the CRC covers the status byte, which is nice I guess. So it could be
         //       a little more reliable? So I think we should use it.
         let mut read_buffer = [0u8; 7];
-        self.i2c
-            .read(self.address, &mut read_buffer)
+        self.aht20.i2c
+            .read(self.aht20.address, &mut read_buffer)
             .map_err(Error::I2c)?;
 
         let data: &[u8] = &read_buffer[..6];
         let crc_byte: u8 = read_buffer[6];
 
         let crc = compute_crc(data);
-        // TODO: delete
-        // rprintln!("data: {:?}", data);
-        // rprintln!("crc_byte: {:?}", crc_byte);
-        // rprintln!("crc: {:?}", crc);
         if crc_byte != crc {
             return Err(Error::InvalidCrc);
         }
 
-        // This is a little awkward, copying the bytes out, but it works.
-        // Note that we're dropping the first byte, which is status, and byte
-        // 7 which is the CRC.
-        // Q: If this was longer, how should we do this? We don't want to copy out
-        //    like 31 bytes like this, right?
+        // This is a little awkward, copying the bytes out, but it works. Note that we're dropping
+        // the first byte, which is status, and byte 7 which is the CRC. Q: If this more bytes, how
+        // should we do this? We don't want to copy out like 31 bytes like this, right?
         Ok([data[1], data[2], data[3], data[4], data[5]])
     }
 
@@ -467,6 +470,7 @@ where
         self
     }
 }
+
 
 /// compute_crc uses the CRCu8 algoritm from crc-any. The parameter choice makes this a
 /// "CRC-8-Dallas/Maxim".
@@ -506,7 +510,7 @@ fn compute_crc(bytes: &[u8]) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, AHT20, SENSOR_ADDRESS};
+    use super::{Error, AHT20, AHT20Initialized, SENSOR_ADDRESS};
     use embedded_hal_mock::delay::MockNoop as MockDelay;
     use embedded_hal_mock::i2c::Mock as I2cMock;
     use embedded_hal_mock::i2c::Transaction;
@@ -674,9 +678,10 @@ mod tests {
         let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        aht20.send_soft_reset(&mut mock_delay).unwrap();
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        aht20_init.send_soft_reset(&mut mock_delay).unwrap();
 
-        let mut mock = aht20.destroy().i2c;
+        let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
     }
 
@@ -694,9 +699,10 @@ mod tests {
         let mock_i2c = I2cMock::new(&expectations);
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        aht20.send_trigger_measurement().unwrap();
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        aht20_init.send_trigger_measurement().unwrap();
 
-        let mut mock = aht20.destroy().i2c;
+        let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
     }
 
@@ -740,9 +746,10 @@ mod tests {
         let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        aht20.measure_once(&mut mock_delay).unwrap();
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        aht20_init.measure_once(&mut mock_delay).unwrap();
 
-        let mut mock = aht20.destroy().i2c;
+        let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
     }
 
@@ -790,9 +797,10 @@ mod tests {
         let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        aht20.measure_once(&mut mock_delay).unwrap();
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        aht20_init.measure_once(&mut mock_delay).unwrap();
 
-        let mut mock = aht20.destroy().i2c;
+        let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
     }
 
@@ -838,12 +846,13 @@ mod tests {
 
         // test and verify
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        match aht20.measure_once(&mut mock_delay) {
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        match aht20_init.measure_once(&mut mock_delay) {
             Ok(_) => panic!("CRC is wrong and measure_once should not pass."),
             Err(err_type) => assert_eq!(err_type, Error::InvalidCrc),
         }
 
-        let mut mock = aht20.destroy().i2c;
+        let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
     }
 
@@ -888,10 +897,11 @@ mod tests {
 
         // test
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        let measurement = aht20.measure(&mut mock_delay).unwrap();
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        let measurement = aht20_init.measure(&mut mock_delay).unwrap();
 
         // verification
-        let mut mock = aht20.destroy().i2c;
+        let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
 
         // Temp was ~22.5C and humidity ~40% when above data taken.

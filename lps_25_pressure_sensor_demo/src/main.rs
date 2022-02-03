@@ -127,45 +127,19 @@ fn main() -> ! {
     lps25hb.bdu_enable(true).unwrap();
     lps25hb.set_datarate(ODR::_1Hz).unwrap();
 
-    // Configure the ahl20 temperature and humidity sensor
-    // FIXME: OK, we need to write our own because:
-    //   * we can't share the delay - we need to take a reference to delay instead
-    //   * NOTE: actually, not only that, we need to take it in the functions as a param.
-    //   * the driver is agpl, but it's a library... not a good match.
-    //   * it'll be fun! You've only done this guided before.
-    let mut aht20_dev = aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS);
-    // TODO: error handling, this is your own driver...
-    aht20_dev.init(&mut delay).unwrap();
+    // Configure the aht20 temperature and humidity sensor
+    let mut aht20_dev =
+        aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS);
+    // TODO: error handling, this is your own driver, you can do it!
+    let mut aht20 = aht20_dev.init(&mut delay).unwrap();
 
     // This is just a real-life verifiation that soft_reset does not misbehave.
     // It is not required at all.
-    let _ = aht20_dev.send_soft_reset(&mut delay).unwrap();
+    let _ = aht20.send_soft_reset(&mut delay).unwrap();
 
     loop {
-        // Read temperature and pressure.  We can't rely on the lps25 temperature sensor for actual
-        // temperature readings. Current sensor spread (all on the same desk):
-        //
-        // * aht20: 21.4 (I believe this one, it's a dedicated sensor, and feels right)
-        // * scd30: 23.9
-        // * nrf52-dk dev board: 25.0
-        // * lps25: 16.78 - yeah, definitely not, it's 9C outside, and the heating is on.
-        //   8.2C between this and the dev board. :facepalm:
-        //
-        // NOTE: for blog. The above and why I want a dedicated temperature sensor.
-        // NOTE: this is a good intro as to why I wanted to test this sensor at all.
-        //
-        // ST's website only advertises it as a pressure sensor and doesn't mention the thermometer
-        // at all. I think it's just there to switch between different profiles based on very
-        // coarse-grained temperature bands.  We print out the read temperature, but don't display
-        // it on the LCD panel.
-        //
-        // Here, we can get a measurement if we create, then destroy the sensor! That works because
-        // then we release the delay device. This really sucks. We *could* take the delay as a
-        // function parameter, rather than embed it in the aht20? That way we'd not hold on to
-        // it. Is that why the lcd takes it as a param? Might well be!
-        // Commit this way, then try to move the delay into a function param.
         // TODO: error handling on measure.
-        let aht20_measurement = aht20_dev.measure(&mut delay).unwrap();
+        let aht20_measurement = aht20.measure(&mut delay).unwrap();
         let lps25_pressure = lps25hb.read_pressure().unwrap();
         let lps25_temperature = lps25hb.read_temperature().unwrap();
 
