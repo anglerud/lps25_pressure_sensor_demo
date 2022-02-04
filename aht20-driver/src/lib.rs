@@ -59,24 +59,16 @@
 //! ```
 
 // TODO:
-//   split driver struct into two, one to initialize,
-//   and one to measure. That will make it impossible
-//   to get wrong.
 // * More and better Docstrings
-// * Transfer notes out into blog article
+// * Do the extra status check with the CRCd status byte
 // * split into independent crate and push to staging repo
 // * push 0.0.1 to real repo
-// * use in the lps25_demo... app.
+// * use external crate in the lps25_demo... app.
 // * push 1.0.0 to real repo
 // * write blog
 // * submit driver and blog to embedded awesome
 // * submit driver and blog to /r/rust
 // * submit driver and blog to rust discourse
-// NOTE: we could make init return a new struct which has the
-//       measure methods on, and *remove* the measure methods
-//       from the AHT20 struct. That way you *couldn't* call
-//       the wrong methods at all. Makes tracking initialized
-//       much easier! I like that a lot.
 use crc_any::CRCu8;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::blocking::i2c;
@@ -213,21 +205,6 @@ pub enum Error<E> {
     InvalidCrc,
 }
 
-// TODO: Create AHT20Initialized, have it
-//       take the AHT20 struct? That reduces dupliateion.
-//       But we might have to make some things public?
-//       *or* do we? Can one return a private struct?
-//       Find out and try it! OTOH having more than one
-//       public stuct doesn't seem like a problem.
-//       I think the above approach if we can.
-//       The goal is to make an API that one can't get wrong,
-//       such as measuring before init. It'll make error handling
-//       easier as well.
-//
-//       OR shall we destroy
-//       the AHT20 and create a *new* struct with the
-//       newly liberated i2c instance?
-//       That might have to duplicate check_status?
 
 /// An AHT20 sensor on the I2C bus `I`.
 pub struct AHT20<I>
@@ -236,7 +213,6 @@ where
 {
     i2c: I,
     address: u8,
-    initialized: bool,
 }
 
 impl<E, I> AHT20<I>
@@ -249,7 +225,6 @@ where
         AHT20 {
             i2c: i2c,
             address: address,
-            initialized: false,
         }
     }
 
@@ -280,8 +255,6 @@ where
             self.send_initialize()?;
             delay.delay_ms(10_u16);
         }
-
-        self.initialized = true;
 
         Ok(AHT20Initialized{aht20: self})
     }
@@ -619,10 +592,8 @@ mod tests {
         let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        assert_eq!(aht20.initialized, false);
         aht20.init(&mut mock_delay).unwrap();
 
-        assert_eq!(aht20.initialized, true);
         let mut mock = aht20.destroy().i2c;
         mock.done(); // verify expectations
     }
@@ -659,10 +630,8 @@ mod tests {
         let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
-        assert_eq!(aht20.initialized, false);
         aht20.init(&mut mock_delay).unwrap();
 
-        assert_eq!(aht20.initialized, true);
         let mut mock = aht20.destroy().i2c;
         mock.done(); // verify expectations
     }
