@@ -104,10 +104,10 @@
 //!                 Yes                    │
 //!                  │                     │
 //!                  ▼                     │
-//!           CRC-checked Ready ─► No ─────┘
+//!     CRC-checked Status::Busy ─► Yes ───┘
 //!                  │
 //!                  ▼
-//!                 Yes
+//!                 No 
 //!                  │
 //!                  ▼
 //!        Calc Humidity and Temp
@@ -435,10 +435,10 @@ where
     ///                 Yes                    │
     ///                  │                     │
     ///                  ▼                     │
-    ///           CRC-checked Ready ─► No ─────┘
+    ///     CRC-checked Status::Busy ─► Yes ───┘
     ///                  │
     ///                  ▼
-    ///                 Yes
+    ///                 No 
     ///                  │
     ///                  ▼
     ///        Calc Humidity and Temp
