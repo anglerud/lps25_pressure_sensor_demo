@@ -135,7 +135,7 @@ fn main() -> ! {
 
     // This is just a real-life verifiation that soft_reset does not misbehave.
     // It is not required at all.
-    let _ = aht20.send_soft_reset(&mut delay).unwrap();
+    let _ = aht20.soft_reset(&mut delay).unwrap();
 
     loop {
         // TODO: error handling on measure.

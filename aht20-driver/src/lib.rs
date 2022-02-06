@@ -1,14 +1,63 @@
 #![cfg_attr(not(test), no_std)]
-//! SCD30 driver and
-//! https://github.com/adafruit/Adafruit_CircuitPython_AHTx0/blob/main/adafruit_ahtx0.py inspration
-//! AHT20 Datasheet: https://cdn-learn.adafruit.com/assets/assets/000/091/676/original/AHT20-datasheet-2020-4-16.pdf?1591047915
+//! AHT20 driver.
 //!
-//! Note that the datasheet linked from http://www.aosong.com/en/products-32.html is an older
-//! datasheet (version 1.0, rather than version 1.1 as linked above) and is significantly more
-//! difficult to understand. I recommend reading version 1.1. All section references in this file
-//! are to the 1.1 version.
+//! Example:
 //!
-//! The below is a flowchart of how to initialize and get measurements from the AHT20.
+//!     # use embedded_hal_mock::delay::MockNoop as MockDelay;
+//!     # use embedded_hal_mock::i2c::Mock as I2cMock;
+//!     # use embedded_hal_mock::i2c::Transaction;
+//!     # use aht20_driver::{AHT20, AHT20Initialized, Command, SENSOR_ADDRESS};
+//!     # let expectations = vec![
+//!     #     // check_status immediately succeeds, we don't need to send Initialize.
+//!     #     Transaction::write(SENSOR_ADDRESS, vec![Command::CheckStatus as u8]),
+//!     #     Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+//!     #     // send_trigger_measurement
+//!     #     Transaction::write(
+//!     #         SENSOR_ADDRESS,
+//!     #         vec![
+//!     #             Command::TriggerMeasurement as u8,
+//!     #             0b0011_0011, // 0x33
+//!     #             0b0000_0000, // 0x00
+//!     #         ],
+//!     #     ),
+//!     #     // check_status - with ready bit set to 'ready' (off)
+//!     #     Transaction::write(SENSOR_ADDRESS, vec![Command::CheckStatus as u8]),
+//!     #     Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+//!     #     // We can now read 7 bytes. status byte, 5 data bytes, crc byte.
+//!     #     // These are taken from a run of the sensor.
+//!     #     Transaction::read(
+//!     #         SENSOR_ADDRESS,
+//!     #         vec![
+//!     #             0b0001_1100, //  28, 0x1c - ready, calibrated, and some mystery flags.
+//!     #             //             bit 8 set to 0 is ready. bit 4 set is calibrated. bit 5
+//!     #             //             and 3 are described as 'reserved'.
+//!     #             0b0110_0101, // 101, 0x65 - first byte of humidity value
+//!     #             0b1011_0100, // 180, 0xb4 - second byte of humidity vaue
+//!     #             0b0010_0101, //  37, 0x25 - split byte. 4 bits humidity, 4 bits temperature.
+//!     #             0b1100_1101, // 205, 0xcd - first full byte of temperature.
+//!     #             0b0010_0110, //  38, 0x26 - second full byte of temperature.
+//!     #             0b1100_0110, // 198, 0xc6 - CRC
+//!     #         ],
+//!     #     ),
+//!     # ];
+//!     # let mock_i2c = I2cMock::new(&expectations);
+//!     # let mut mock_delay = MockDelay::new();
+//!     let mut aht20_uninit = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+//!     let mut aht20 = aht20_uninit.init(&mut mock_delay).unwrap();
+//!     let measurement = aht20.measure(&mut mock_delay).unwrap();
+//!
+//!     println!("temperature (aht20): {:.2}C", measurement.temperature);
+//!     println!("humidity (aht20): {:.2}%", measurement.humidity);
+//!
+//! [AHT20 Datasheet](https://cdn-learn.adafruit.com/assets/assets/000/091/676/original/AHT20-datasheet-2020-4-16.pdf?1591047915)
+//!
+//! Note that the datasheet linked directly from the manufacturer's website
+//! [Aogong AHT20](http://www.aosong.com/en/products-32.html) is an older datasheet (version
+//! 1.0, rather than version 1.1 as linked above) and is significantly more
+//! difficult to understand. I recommend reading version 1.1. All section
+//! references in this file are to the 1.1 version.
+//!
+//! The below is a flowchart of how the sensor gets initialized and measurements taken.
 //! Note that the flowchart does not include the parameters that you need to give to
 //! some commands, and it also doesn't include the SoftReset command flow.
 //!
@@ -19,22 +68,22 @@
 //!              Wait 40 ms
 //!                  │
 //!                  ▼
-//!   Command::CheckStatus          ◄───    Wait 10 ms
+//!   Command::CheckStatus  (0x71)    ◄───    Wait 10 ms
 //!                  │                           ▲
 //!                  ▼                           │
-//!          Status::Calibrated ──► No ──► Command::Initialize
+//!          Status::Calibrated ──► No ──► Command::Initialize (0xBE)
 //!                  │
 //!                  ▼
 //!                 Yes
 //!                  │
 //!                  ▼
-//! Command::TriggerMeasurement          ◄─┐
+//! Command::TriggerMeasurement  (0xAC)  ◄─┐
 //!                  │                     │
 //!                  ▼                     │
 //!             Wait 80 ms                 │
 //!                  │                     │
 //!                  ▼                     │
-//!   Command::CheckStatus        ◄──┐     │
+//!   Command::CheckStatus (0x71) ◄──┐     │
 //!                  │               │     │
 //!                  ▼               │     │
 //!             Status::Busy  ───►  Yes    │
@@ -59,30 +108,31 @@
 //! ```
 
 // TODO:
-// * More and better Docstrings
 // * Do the extra status check with the CRCd status byte
-// * split into independent crate and push to staging repo
+// * split into independent crate, push to github, and push to staging repo
+// * write README for the repo
+// * update links in blog
 // * push 0.0.1 to real repo
 // * use external crate in the lps25_demo... app.
 // * push 1.0.0 to real repo
-// * write blog
+// * publish blog
 // * submit driver and blog to embedded awesome
 // * submit driver and blog to /r/rust
 // * submit driver and blog to rust discourse
+// * submit driver and blog to the embedded rust discord?
 use crc_any::CRCu8;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::blocking::i2c;
 
 
-/// AHT20 I2C address
+/// AHT20 sensor's I2C address.
 pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
 
 /// Commands that can be sent to the AHT20 sensor.
 ///
-/// Note that a few of these take parameters, but that there is no explanation provided about what
+/// Note that a few of these take parameters but that there are no explanations provided about what
 /// those parameters actually are. You should consider the command and specified parameters to be
-/// just one three-byte command.
-/// These can be found in the datasheet, Section 5.3, page 8, Table 9
+/// just one three-byte command. These can be found in the datasheet, Section 5.3, page 8, Table 9.
 pub enum Command {
     CheckStatus = 0b0111_0001, // 0x71, Get a byte of status word.
     // There are two usages for the CheckStatus command. You can use this on startup to check if
@@ -106,38 +156,51 @@ pub enum Command {
 /// Table 10, page 8 of the datasheet.
 pub enum Status {
     Busy = 0b1000_0000, // Status bit for busy - 8th bit enabled. 1<<7, 0x80
-    // 1 is Busy measuring. 0 is "Free in dormant state"
+    // 1 is Busy measuring. 0 is "Free in dormant state" or "ready".
     Calibrated = 0b0000_1000, // Status bit for calibrated - 4th bit enabled. 1<<4, 0x08.
     // 1 is Calibrated, 0 is uncalibrated. If 0, send Command::Initialize.
 }
 
 
-// TODO: docstring
+/// SensorStatus is the response from the sensor indicating if it is ready to read from, and if it
+/// is calibrated.
+///
+/// This is returned from the `check_status` method. It is used both
+/// during initialization, which is when the sensor caibrates itself, and during
+/// measure. During measure the sensor will report itself as busy (not ready)
+/// for a period of 80ms.
 #[derive(Debug, Clone, Copy)]
 pub struct SensorStatus(pub u8);
 
 impl SensorStatus {
-    // Not sure this is needed.
-    // could also be called from_status_byte?
+    /// Create a new SensorStatus from an AHT20 status byte.
+    ///
+    /// That byte comes from the `check_status` method.
     pub fn new(status: u8) -> Self {
         SensorStatus(status)
     }
 
-    /// Check if the sensor is ready to have data read from it.
-    /// After issuing a sensor read, you must check is_ready before reading the
-    /// result. The read() function takes care of this wait and check.
+    /// Check if the sensor is ready to have data read from it. After issuing a sensor read, you
+    /// must check is_ready before reading the result. The measure function takes care of this wait
+    /// and check.
     pub fn is_ready(self) -> bool {
         // The busy bit should be 0 (not busy) for the sensor to report ready.
         (self.0 & Status::Busy as u8) == 0
     }
 
+    /// Check if the sensor is calibrated. If it is not, you must call `init` to initialize the
+    /// sensor.
     pub fn is_calibrated(self) -> bool {
         // The calibrated bit should be set.
         (self.0 & Status::Calibrated as u8) != 0
     }
 }
 
-// TODO: docstring
+/// SensorReading is a single reading from the AHT20 sensor.
+///
+/// This is returned from the `measure` method. You get:
+/// * humidity in % Relative Humidity
+/// * temperature in degrees Celsius.
 #[derive(Debug, Clone, Copy)]
 pub struct SensorReading {
     pub humidity: f32,
@@ -145,7 +208,8 @@ pub struct SensorReading {
 }
 
 impl SensorReading {
-    pub fn from_bytes(sensor_data: [u8; 5]) -> Self {
+    // TODO: docstring
+    fn from_bytes(sensor_data: [u8; 5]) -> Self {
         // Our five bytes of sensor data is split into 20 bits (two and a half bytes) humidity and
         // 20 bits temperature. We'll have to spend a bit of time splitting the middle byte up.
         let humidity_bytes: &[u8] = &sensor_data[..2];
@@ -196,7 +260,7 @@ impl SensorReading {
     }
 }
 
-/// A driver error
+/// Driver errors.
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {
     /// I2C bus error
@@ -207,6 +271,9 @@ pub enum Error<E> {
 
 
 /// An AHT20 sensor on the I2C bus `I`.
+///
+/// The address of the sensor will be `SENSOR_ADDRESS` from this package, unless there is some kind
+/// of special address translating hardware in use.
 pub struct AHT20<I>
 where
     I: i2c::Read + i2c::Write,
@@ -220,7 +287,10 @@ where
     I: i2c::Read<Error = E> + i2c::Write<Error = E>,
 {
     /// Initializes the SCD30 driver.
-    /// This consumes the I2C bus `I`
+    ///
+    /// This consumes the I2C bus `I`. Before you can get temperature and humidity measurements,
+    /// you must call the `init` method which calibrates the sensor. The address will almost always
+    /// be `SENSOR_ADDRESS` from this crate.
     pub fn new(i2c: I, address: u8) -> Self {
         AHT20 {
             i2c: i2c,
@@ -259,9 +329,14 @@ where
         Ok(AHT20Initialized{aht20: self})
     }
 
-    // Send CheckStatus, read one byte back.
-    // TODO: better docstring
-    pub fn check_status(&mut self) -> Result<SensorStatus, Error<E>> {
+    /// check_Status asks the AHT20 sensor to report its status.
+    ///
+    /// The sensor can be calibrated or not, also busy generating a sensor measurement or ready.
+    /// This method returns the SensorStatus struct, which you can use to determine what the state
+    /// of the sensor is.
+    ///
+    /// This is used by both measure_once and init.
+    fn check_status(&mut self) -> Result<SensorStatus, Error<E>> {
         let command: [u8; 1] = [Command::CheckStatus as u8];
         let mut read_buffer = [0u8; 1];
 
@@ -274,13 +349,14 @@ where
         Ok(SensorStatus::new(status_byte))
     }
 
-    // Initialize = 0b1011_1110, // 0xBE, Section 5.3, page 8, Table 9
-    //       This command takes two bytes of parameter.
-    //       0b0000_1000 (0x08), then 0b0000_0000 (0x00).
-    // TODO: better docstring
-    pub fn send_initialize(&mut self) -> Result<(), Error<E>> {
+    /// send_initialize sends the Initialize command to the sensor which make it calibrate.
+    ///
+    /// After sending initialize, there is a required 40ms wait period and verification
+    /// that the sensor reports itself calibrated. See the `init` method.
+    fn send_initialize(&mut self) -> Result<(), Error<E>> {
         // Send CheckStatus, read one byte back.
         let command: [u8; 3] = [
+            // Initialize = 0b1011_1110. Equivalent to 0xBE, Section 5.3, page 8, Table 9
             Command::Initialize as u8,
             // Two parameters as described in the datasheet. There is no indication what these
             // parameters mean, just that they should be provided. There is also no returned
@@ -301,6 +377,9 @@ where
 }
 
 
+/// AHT20Initialized is returned by AHT20::init() and the sensor is ready to read from.
+///
+/// In this state you can trigger a measurement with `.measure(&mut delay)`.
 pub struct AHT20Initialized<'a, I>
 where
     I: i2c::Read + i2c::Write,
@@ -313,44 +392,12 @@ impl<'a, E, I> AHT20Initialized<'a, I>
 where
     I: i2c::Read<Error = E> + i2c::Write<Error = E>,
 {
-    // TriggerMeasurement = 0b1010_1100, // 0xAC, Section 5.3, page 8, Table 9
-    //       This command takes two bytes of parameter.
-    //       0b00110011 (0x33), then 0b0000_0000 (0x00).
-    // TODO: better docstring.
-    pub fn send_trigger_measurement(&mut self) -> Result<(), Error<E>> {
-        // Send TriggerMeasurement, read nothing back.
-        let command: [u8; 3] = [
-            Command::TriggerMeasurement as u8,
-            // Two parameters as described in the datasheet. There is no indication what these
-            // parameters mean, just that they should be provided. There is no returned value.
-            // To get the measurement, see [measure](measure).
-            0b0011_0011, // 0x33
-            0b0000_0000, // 0x00
-        ];
-
-        self.aht20.i2c.write(self.aht20.address, &command).map_err(Error::I2c)?;
-
-        Ok(())
-    }
-
-    // TODO: better docstring.
-    // SoftReset = 0b1011_1010, // 0xBA, Section 5.3, page 8, Table 9.
-    //                          //       Also see Section 5.5. This takes 20ms or less
-    //                          //       to complete.
-    pub fn send_soft_reset(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>> {
-        // Send SoftReset, read nothing back, wait 20ms.
-        let command: [u8; 1] = [ Command::SoftReset as u8, ];
-
-        self.aht20.i2c.write(self.aht20.address, &command).map_err(Error::I2c)?;
-        // The datasheet in section 5.5 says there is a guarantee that the reset time does
-        // not exceed 20ms.
-        delay.delay_ms(20_u16);
-
-        Ok(())
-    }
-
-    /// Measure temperature (and humidity) once.
+    /// Measure temperature and humidity.
     ///
+    /// This masurement takes at least 80ms to complete. Together with the `measure_once` method,
+    /// this is the work being carried out:
+    ///
+    /// ```text
     /// Command::TriggerMeasurement (0xAC)   ◄─┐
     ///                  │                     │
     ///                  ▼                     │
@@ -379,7 +426,7 @@ where
     ///                  │
     ///                  ▼
     ///        Calc Humidity and Temp
-    /// TODO: Update doctring.
+    /// ```
     pub fn measure(
         &mut self,
         delay: &mut (impl DelayUs<u16> + DelayMs<u16>),
@@ -392,14 +439,18 @@ where
                         sb[0], sb[1], sb[2], sb[3], sb[4],
                     ]))
                 }
-                Err(Error::InvalidCrc) => return Err(Error::InvalidCrc), // Q: Also log? How?
+                // TODO(anglerud, 2022-02-06): how do we log this error? We're a library.
+                Err(Error::InvalidCrc) => (),
                 Err(other) => return Err(other),
             }
         }
     }
 
-    // TODO: docstring
-    pub fn measure_once(
+    /// Perform one measurement and return the sensor's 5 raw data bytes.
+    ///
+    /// This takes at least 80ms to complete, and only returns 2x20 bits in 5 bytes.
+    /// This data is interpreted by the `measure` function.
+    fn measure_once(
         &mut self,
         delay: &mut (impl DelayUs<u16> + DelayMs<u16>),
     ) -> Result<[u8; 5], Error<E>> {
@@ -411,14 +462,6 @@ where
             delay.delay_ms(1_u16);
         }
 
-        // So, the datasheet is quite clear that we read back 7 bytes total. The first byte is a
-        // status byte - which seems very redundant, as we have just been checking the status
-        // above. However, it's there - but we can just ignore it. We can't get rid of it though
-        // as it's part of the CRCd data. OK, being CRCd is an advantage though!
-        //
-        // TODO OR: doublecheck the status byte - check for ready and calibrated again?
-        // NOTE: So the CRC covers the status byte, which is nice I guess. So it could be
-        //       a little more reliable? So I think we should use it.
         let mut read_buffer = [0u8; 7];
         self.aht20.i2c
             .read(self.aht20.address, &mut read_buffer)
@@ -432,13 +475,58 @@ where
             return Err(Error::InvalidCrc);
         }
 
+        // TODO(anglerud, 2022-02-06): Check the first byte, which is a CRC-checked status byte
+        // for ready, and return an error if it's not. You'll need to create a new error variant.
+        // ReadFromBusySensor perhaps. This is a bit odd, as to get here, we'll have checked the
+        // ready status - but I guess a scrambled byte could have occurred, and it's less likely
+        // if we've passed the CRC check.
+
         // This is a little awkward, copying the bytes out, but it works. Note that we're dropping
-        // the first byte, which is status, and byte 7 which is the CRC. Q: If this more bytes, how
-        // should we do this? We don't want to copy out like 31 bytes like this, right?
+        // the first byte, which is status, and byte 7 which is the CRC. Q: If this were more
+        // bytes, how should we do this? We don't want to copy out like 31 bytes like this, right?
         Ok([data[1], data[2], data[3], data[4], data[5]])
     }
 
-    /// Destroys this driver and releases the I2C bus `I`
+    /// Send the "Trigger Measurement" command to the sensor.
+    ///
+    /// This does not return anything, it only instructs the sensor to get the data ready. After
+    /// sending this command, you need to wait 80ms before attempting to read data back. See the
+    /// `measure_once` function and the flowchart at the top of this file.
+    fn send_trigger_measurement(&mut self) -> Result<(), Error<E>> {
+        // TriggerMeasurement is 0b1010_1100. Equivalent to 0xAC: Section 5.3, page 8, Table 9
+        // This command takes two bytes of parameter:  0b00110011 (0x33), then 0b0000_0000 (0x00).
+        let command: [u8; 3] = [
+            Command::TriggerMeasurement as u8,
+            // Two parameters as described in the datasheet. There is no indication what these
+            // parameters mean, just that they should be provided. There is no returned value.
+            // To get the measurement, see [measure](measure).
+            0b0011_0011, // 0x33
+            0b0000_0000, // 0x00
+        ];
+
+        self.aht20.i2c.write(self.aht20.address, &command).map_err(Error::I2c)?;
+
+        Ok(())
+    }
+
+    /// Send the Soft Reset command to the sensor.
+    ///
+    /// This performs a soft reset, it's unclear when this might be needed. It takes 20ms to
+    /// complete and returns nothing.
+    pub fn soft_reset(&mut self, delay: &mut (impl DelayUs<u16> + DelayMs<u16>)) -> Result<(), Error<E>> {
+        // SoftReset is 0b1011_1010. Equivalent to 0xBA, Section 5.3, page 8, Table 9.
+        let command: [u8; 1] = [ Command::SoftReset as u8, ];
+
+        self.aht20.i2c.write(self.aht20.address, &command).map_err(Error::I2c)?;
+        // The datasheet in section 5.5 says there is a guarantee that the reset time does
+        // not exceed 20ms. We wait the full 20ms to ensure you can trigger a measurement
+        // immediately after this function.
+        delay.delay_ms(20_u16);
+
+        Ok(())
+    }
+
+    /// Destroys this initialized driver and lets you release the I2C bus `I`
     pub fn destroy(self) -> Self {
         self
     }
@@ -471,7 +559,7 @@ where
 /// '0x31'
 /// ```
 ///
-/// And, confirming that's right, this is what Knurling's test driver crate uses.
+/// This is also what Knurling's test driver crate uses.
 /// https://github.com/knurling-rs/test-driver-crate-example/blob/main/src/lib.rs#L59
 /// which indicates this is either an I2C thing, or a common driver default as CRC parameters.
 fn compute_crc(bytes: &[u8]) -> u8 {
@@ -566,7 +654,6 @@ mod tests {
             ],
         )];
         let mock_i2c = I2cMock::new(&expectations);
-        // let mut mock_delay = MockDelay::new();
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         aht20.send_initialize().unwrap();
@@ -638,7 +725,7 @@ mod tests {
 
     /// Test sending the i2c SoftReset command.
     #[test]
-    fn send_soft_reset() {
+    fn soft_reset() {
         let expectations = vec![Transaction::write(
             SENSOR_ADDRESS,
             vec![ super::Command::SoftReset as u8, ],
@@ -648,7 +735,7 @@ mod tests {
 
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
-        aht20_init.send_soft_reset(&mut mock_delay).unwrap();
+        aht20_init.soft_reset(&mut mock_delay).unwrap();
 
         let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
@@ -773,9 +860,9 @@ mod tests {
         mock.done(); // verify expectations
     }
 
-    // Single measurement pass with bad CRC.
-    //
-    // Intentionally corrupt the read data to make sure we get a CRC error.
+    /// Single measurement pass with bad CRC.
+    ///
+    /// Intentionally corrupt the read data to make sure we get a CRC error.
     #[test]
     fn measure_once_bad_crc() {
         let expectations = vec![
@@ -878,12 +965,14 @@ mod tests {
         assert!(measurement.humidity > 39.0 && measurement.humidity < 41.0);
     }
 
+    /// Test a valid CRC invocation.
     #[test]
     fn crc_correct() {
         // Example from the Interface Specification document.
         assert_eq!(super::compute_crc(&[0xBE, 0xEF]), 0x92);
     }
 
+    /// Test a CRC call that does not match.
     #[test]
     fn crc_wrong() {
         // Changed example from the Interface Specification document. This should not match - the
