@@ -3,6 +3,17 @@
 version = 3
 
 [[package]]
+name = "aht20-driver"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "964145e392a602ae779b3bac27561c455818b501d09954823eb59bb0e0306c65"
+dependencies = [
+ "crc-any",
+ "embedded-hal",
+ "rtt-target 0.2.2",
+]
+
+[[package]]
 name = "aligned"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -104,6 +115,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc-any"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "073375684a58dece169afbdc9879a027f3698118ad3814938316c6002b7aa921"
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -160,6 +177,7 @@ checksum = "822add9edb1860698b79522510da17bef885171f75aa395cff099d770c609c24"
 name = "lps25_barometer"
 version = "0.1.0"
 dependencies = [
+ "aht20-driver",
  "alloc-cortex-m",
  "cortex-m 0.6.7",
  "cortex-m-rt",

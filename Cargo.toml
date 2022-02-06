@@ -17,6 +17,7 @@ rtt-target = { version = "0.2.0", features = ["cortex-m"] }
 lps25hb = "0.0.4"
 shared-bus = "0.2.2"
 hd44780-driver = "0.4.0"
+aht20-driver = "1.0.0"
 
 
 [dependencies.stm32f1xx-hal]
@@ -32,3 +33,4 @@ bench = false
 lto = true
 codegen-units = 1
 debug = true
+opt-level = "z"

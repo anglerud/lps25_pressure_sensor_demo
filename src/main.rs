@@ -42,6 +42,9 @@ use lps25hb::interface::{I2cInterface,
 
 const LCD_I2C_ADDRESS: u8 = 0x27;
 
+// Temperature (and humidity) sensor.
+use aht20_driver;
+
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
@@ -129,6 +132,11 @@ fn main() -> ! {
     lps25hb.bdu_enable(true).unwrap();
     lps25hb.set_datarate(ODR::_1Hz).unwrap();
 
+    // Configure the aht20 temperature and humidity sensor
+    let mut aht20_uninit =
+        aht20_driver::AHT20::new(i2c_bus.acquire_i2c(), aht20_driver::SENSOR_ADDRESS);
+    let mut aht20 = aht20_uninit.init(&mut delay).unwrap();
+
     loop {
         // Read temperature and pressure.  We can't rely on the temperature sensor for actual
         // temperature readings.  It shows 19.2C when the CO2 sensor says 25.9, and the DK internal
@@ -136,19 +144,24 @@ fn main() -> ! {
         // mention the thermometer at all. I think it's just there to switch between different
         // profiles based on very coarse-grained temperature bands.
         // We print out the read temperature, but don't display it on the LCD panel.
-        let temp = lps25hb.read_temperature().unwrap();
-        let press = lps25hb.read_pressure().unwrap();
+        let lps25_temperature = lps25hb.read_temperature().unwrap();
+        let lps25_pressure = lps25hb.read_pressure().unwrap();
+        // Read temperature and humidity from the AHT20, this is much more accurate.
+        let aht20_measurement = aht20.measure(&mut delay).unwrap();
 
         lcd.clear(&mut delay).unwrap();
-        let hpa_str = alloc::format!("{:.1} hPa", press);
-        // hecto is a bit of an odd size, also display is KiloPascal.
-        let kpa_str = alloc::format!("{:.2} kPa", press / 10.0);
+        let hpa_str = alloc::format!("{:.1} hPa", lps25_pressure);
+        let temp_str = alloc::format!("{:.2}C", aht20_measurement.temperature);
 
         lcd.write_str(&hpa_str, &mut delay).unwrap();
         lcd.set_cursor_pos(40, &mut delay).unwrap();  // Move to 2nd row.
-        lcd.write_str(&kpa_str, &mut delay).unwrap();
+        lcd.write_str(&temp_str, &mut delay).unwrap();
 
-        rprintln!("temperature: {:.1} C, pressure: {:.1} hPa", temp, press);
+        rprintln!("pressure (lps25): {:.1} hPa", lps25_pressure);
+        rprintln!("temperature (lps25): {:.2}C", lps25_temperature);
+        rprintln!("temperature (aht20): {:.2}C", aht20_measurement.temperature);
+        rprintln!("humidity (aht20): {:.2}%", aht20_measurement.humidity);
+        rprintln!("--");
 
         // Blink the Blue Pill's onboard LED to show liveness.
         delay.delay_ms(1_000_u16);
