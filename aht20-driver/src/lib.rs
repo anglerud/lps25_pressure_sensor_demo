@@ -99,6 +99,12 @@
 //!                  │                     │
 //!                  ▼                     │
 //!               CRC good ─► No  ─────────┘
+//!                  │                     ▲
+//!                  ▼                     │
+//!                 Yes                    │
+//!                  │                     │
+//!                  ▼                     │
+//!           CRC-checked Ready ─► No ─────┘
 //!                  │
 //!                  ▼
 //!                 Yes
@@ -108,7 +114,6 @@
 //! ```
 
 // TODO:
-// * Do the extra status check with the CRCd status byte
 // * split into independent crate, push to github, and push to staging repo
 // * write README for the repo
 // * update links in blog
@@ -123,7 +128,6 @@
 use crc_any::CRCu8;
 use embedded_hal::blocking::delay::{DelayMs, DelayUs};
 use embedded_hal::blocking::i2c;
-
 
 /// AHT20 sensor's I2C address.
 pub const SENSOR_ADDRESS: u8 = 0b0011_1000; // This is I2C address 0x38;
@@ -208,7 +212,9 @@ pub struct SensorReading {
 }
 
 impl SensorReading {
-    // TODO: docstring
+    /// Create a SensorReading from the data returned by the sensor.
+    ///
+    /// This is done by the `measure` method.
     fn from_bytes(sensor_data: [u8; 5]) -> Self {
         // Our five bytes of sensor data is split into 20 bits (two and a half bytes) humidity and
         // 20 bits temperature. We'll have to spend a bit of time splitting the middle byte up.
@@ -267,6 +273,10 @@ pub enum Error<E> {
     I2c(E),
     /// CRC validation failed
     InvalidCrc,
+    /// Unexpectedly not ready - this can happen when the sensor sends back "busy" but the
+	/// I2C data gets corrupted and we receive "ready", then later the
+    /// CRC-checked status byte correctly reports "busy" and we have to abort the measurement.
+    UnexpectedReady,
 }
 
 
@@ -420,6 +430,12 @@ where
     ///                  │                     │
     ///                  ▼                     │
     ///               CRC good ─► No  ─────────┘
+    ///                  │                     ▲
+    ///                  ▼                     │
+    ///                 Yes                    │
+    ///                  │                     │
+    ///                  ▼                     │
+    ///           CRC-checked Ready ─► No ─────┘
     ///                  │
     ///                  ▼
     ///                 Yes
@@ -439,8 +455,9 @@ where
                         sb[0], sb[1], sb[2], sb[3], sb[4],
                     ]))
                 }
-                // TODO(anglerud, 2022-02-06): how do we log this error? We're a library.
-                Err(Error::InvalidCrc) => (),
+                // TODO(anglerud, 2022-02-06): how do we log these errors? We're a library.
+                Err(Error::InvalidCrc) => (), // Try again
+                Err(Error::UnexpectedReady) => (), // Try again
                 Err(other) => return Err(other),
             }
         }
@@ -462,6 +479,7 @@ where
             delay.delay_ms(1_u16);
         }
 
+        // 1 byte status, 20 bits humidity + 20 bits temperature, 1 byte CRC
         let mut read_buffer = [0u8; 7];
         self.aht20.i2c
             .read(self.aht20.address, &mut read_buffer)
@@ -475,11 +493,13 @@ where
             return Err(Error::InvalidCrc);
         }
 
-        // TODO(anglerud, 2022-02-06): Check the first byte, which is a CRC-checked status byte
-        // for ready, and return an error if it's not. You'll need to create a new error variant.
-        // ReadFromBusySensor perhaps. This is a bit odd, as to get here, we'll have checked the
-        // ready status - but I guess a scrambled byte could have occurred, and it's less likely
-        // if we've passed the CRC check.
+        // The first byte of the sensor's response is a repeat of the status byte.
+        // There is a minescule chance that the previous ready message was caused
+        // by noise on the i2c bus. This byte has been CRC-checked.
+        let status = SensorStatus::new(read_buffer[0]);
+        if !status.is_ready() {
+            return Err(Error::UnexpectedReady);
+        }
 
         // This is a little awkward, copying the bytes out, but it works. Note that we're dropping
         // the first byte, which is status, and byte 7 which is the CRC. Q: If this were more
@@ -804,6 +824,58 @@ mod tests {
         let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
         let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
         aht20_init.measure_once(&mut mock_delay).unwrap();
+
+        let mock = &mut aht20_init.destroy().aht20.i2c;
+        mock.done(); // verify expectations
+    }
+
+    /// Measure once, sensor erroniously reports ready at once, then correctly reports
+    /// busy in the CRC-checked status byte causing an error.
+    ///
+    /// No wait is needed in this scenario.
+    #[test]
+    fn measure_once_ready_misreported() {
+        let expectations = vec![
+            // send_trigger_measurement
+            Transaction::write(
+                SENSOR_ADDRESS,
+                vec![
+                    super::Command::TriggerMeasurement as u8,
+                    0b0011_0011, // 0x33
+                    0b0000_0000, // 0x00
+                ],
+            ),
+            // check_status called. 4th bit set to to 1 - signifying the sensor is calibrated 8th
+            // bit set to 0 (not busy), signalling that a measurement is ready for us to read.
+            Transaction::write(SENSOR_ADDRESS, vec![super::Command::CheckStatus as u8]),
+            // NOTE: This read says we're not busy, that is "ready".
+            Transaction::read(SENSOR_ADDRESS, vec![0b0000_1000]),
+            // We can now read 7 bytes. status byte, 5 data bytes, crc byte.
+            // These are taken from a run of the sensor.
+            Transaction::read(
+                SENSOR_ADDRESS,
+                vec![
+                    0b1001_1100, // 156, 0x9c - busy, calibrated, and some mystery flags.
+                    //             bit 8 set to 1 is busy. bit 4 set is calibrated. bit 5
+                    //             and 3 are described as 'reserved'.
+                    //             NOTE: this says busy, contradicting the ready above.
+                    0b0110_0101, // 101, 0x65 - first byte of humidity value
+                    0b1011_0100, // 180, 0xb4 - second byte of humidity vaue
+                    0b0010_0101, //  37, 0x25 - split byte. 4 bits humidity, 4 bits temperature.
+                    0b1100_1101, // 205, 0xcd - first full byte of temperature.
+                    0b0010_0110, //  38, 0x26 - second full byte of temperature.
+                    0b0010_1010, // 424, 0x2a - CRC
+                ],
+            ),
+        ];
+        let mock_i2c = I2cMock::new(&expectations);
+        let mut mock_delay = MockDelay::new();
+
+        let mut aht20 = AHT20::new(mock_i2c, SENSOR_ADDRESS);
+        let mut aht20_init = AHT20Initialized{aht20: &mut aht20};
+        // We received a ready from the check_status method, then a busy in the CRC-checked
+        // status byte - and therefore we got the UnexpectedReady.
+        assert_eq!(aht20_init.measure_once(&mut mock_delay), Err(Error::UnexpectedReady));
 
         let mock = &mut aht20_init.destroy().aht20.i2c;
         mock.done(); // verify expectations
