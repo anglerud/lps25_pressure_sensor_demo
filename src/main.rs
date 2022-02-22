@@ -15,9 +15,9 @@ use core::alloc::Layout;
 extern crate alloc;
 use alloc_cortex_m::CortexMHeap;
 
-// This is the "Real Time Terminal" support for the debugger. I'm using an ST-Link V2 clone.
-use rtt_target::{rprintln, rtt_init_print};
-use panic_rtt_target as _;
+// Use defmt with the "Real Time Terminal" support.
+use defmt_rtt as _;
+use panic_probe as _;
 
 // The Blue Pill's HAL crate imports.
 use stm32f1xx_hal::{
@@ -56,8 +56,6 @@ fn main() -> ! {
     let size = 256; // in bytes
     unsafe { ALLOCATOR.init(start, size) }
 
-    // Init buffers for debug printing
-    rtt_init_print!();
     // Get access to the core peripherals from the cortex-m crate
     let cp = cortex_m::Peripherals::take().unwrap();
     // Get access to the device specific peripherals from the peripheral access crate
@@ -157,11 +155,11 @@ fn main() -> ! {
         lcd.set_cursor_pos(40, &mut delay).unwrap();  // Move to 2nd row.
         lcd.write_str(&temp_str, &mut delay).unwrap();
 
-        rprintln!("pressure (lps25): {:.1} hPa", lps25_pressure);
-        rprintln!("temperature (lps25): {:.2}C", lps25_temperature);
-        rprintln!("temperature (aht20): {:.2}C", aht20_measurement.temperature);
-        rprintln!("humidity (aht20): {:.2}%", aht20_measurement.humidity);
-        rprintln!("--");
+        defmt::println!("pressure (lps25): {=f32} hPa", lps25_pressure);
+        defmt::println!("temperature (lps25): {=f32}C", lps25_temperature);
+        defmt::println!("temperature (aht20): {=f32}C", aht20_measurement.temperature);
+        defmt::println!("humidity (aht20): {=f32}%", aht20_measurement.humidity);
+        defmt::println!("--");
 
         // Blink the Blue Pill's onboard LED to show liveness.
         delay.delay_ms(1_000_u16);
