@@ -5,24 +5,21 @@
 //!
 //! This code was started from the `blue_pill_base` repo which you can read about in the README as
 //! well.
-
 #![no_std]
-#![cfg_attr(not(doc), no_main)]
-#![feature(alloc_error_handler)]
+#![no_main]
 
-// This gives us `alloc` support, so we can use the format macro.
-use core::alloc::Layout;
-extern crate alloc;
-use alloc_cortex_m::CortexMHeap;
-
-// This is the "Real Time Terminal" support for the debugger. I'm using an ST-Link V2 clone.
-use panic_rtt_target as _;
-use rtt_target::{rprintln, rtt_init_print};
+// Global logger using "Real Time Terminal" support for the debugger. I'm using an ST-Link V2 clone.
+// This goes via Knurlin-rs' defmt.
+use defmt_rtt as _;
+use panic_probe as _;
 
 // The Blue Pill's HAL crate imports.
 use cortex_m_rt::entry;
-use embedded_hal::digital::v2::OutputPin;
-use stm32f1xx_hal::{delay, i2c, pac, prelude::*};
+use stm32f1xx_hal::{i2c, pac, prelude::*};
+
+// Strings, in a no_std env
+use core::fmt::Write;
+use arrayvec::ArrayString;
 
 // Shared-bus lets us use multiple I2C devices on the same I2C bus.
 use shared_bus;
@@ -38,20 +35,9 @@ const LCD_I2C_ADDRESS: u8 = 0x27;
 
 // Temperature (and humidity) sensor.
 use aht20_driver;
-// use aht20;
-
-#[global_allocator]
-static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
 #[entry]
 fn main() -> ! {
-    // We need to initialize the allocator BEFORE using it - so we do that first.
-    let start = cortex_m_rt::heap_start() as usize;
-    let size = 256; // in bytes
-    unsafe { ALLOCATOR.init(start, size) }
-
-    // Init buffers for debug printing
-    rtt_init_print!();
     // Get access to the core peripherals from the cortex-m crate
     let cp = cortex_m::Peripherals::take().unwrap();
     // Get access to the device specific peripherals from the peripheral access crate
@@ -60,29 +46,26 @@ fn main() -> ! {
     // Take ownership over the raw flash and rcc devices and convert them into the corresponding
     // HAL structs
     let mut flash = dp.FLASH.constrain();
-    let mut rcc = dp.RCC.constrain();
+    let rcc = dp.RCC.constrain();
 
     // Freeze the configuration of all the clocks in the system and store the frozen frequencies in
     // `clocks`
     let clocks = rcc.cfgr.freeze(&mut flash.acr);
-    let mut delay = delay::Delay::new(cp.SYST, clocks);
+    let mut delay = cp.SYST.delay(&clocks);
 
     // Acquire the GPIOC peripheral
-    let mut gpiob = dp.GPIOB.split(&mut rcc.apb2);
-    let mut gpioc = dp.GPIOC.split(&mut rcc.apb2);
+    let mut gpiob = dp.GPIOB.split();
+    let mut gpioc = dp.GPIOC.split();
 
     // Configure gpio C pin 13 as a push-pull output. The `crh` register is passed to the function
     // in order to configure the port. For pins 0-7, crl should be passed instead.
     let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
 
     // Set up I2C
-    let afio = dp.AFIO.constrain(&mut rcc.apb2);
-    let mut mapr = afio.mapr;
-    let mut apb = rcc.apb1;
+    let mut afio = dp.AFIO.constrain();
     let scl = gpiob.pb6.into_alternate_open_drain(&mut gpiob.crl);
     let sda = gpiob.pb7.into_alternate_open_drain(&mut gpiob.crl);
 
-    let mode = i2c::Mode::Standard { frequency: 40.hz() };
     let start_timeout_us: u32 = 10000;
     let start_retries: u8 = 5;
     let addr_timeout_us: u32 = 10000;
@@ -91,10 +74,9 @@ fn main() -> ! {
     let i2c = i2c::BlockingI2c::i2c1(
         dp.I2C1,
         (scl, sda),
-        &mut mapr,
-        mode,
+        &mut afio.mapr,
+        i2c::Mode::Standard { frequency: 40.Hz() },
         clocks,
-        &mut apb,
         start_timeout_us,
         start_retries,
         addr_timeout_us,
@@ -144,28 +126,31 @@ fn main() -> ! {
         let lps25_temperature = lps25hb.read_temperature().unwrap();
 
         lcd.clear(&mut delay).unwrap();
-        let hpa_str = alloc::format!("{:.1} hPa", lps25_pressure);
-        let temp_str = alloc::format!("{:.2}C", aht20_measurement.temperature);
 
-        lcd.write_str(&hpa_str, &mut delay).unwrap();
+        let mut hpa_buf = ArrayString::<16>::new(); // The display is 16 char wide.
+        let mut temp_buf = ArrayString::<16>::new(); // The display is 16 char wide.
+       
+        if let Err(_) = write!(&mut hpa_buf, "{:.1}hPa", lps25_pressure) {
+            defmt::error!("Failed to write to pressure buffer");
+        }
+        if let Err(_) = write!(&mut temp_buf, "{:.2}C", aht20_measurement.temperature) {
+            defmt::error!("Failed to write to temperature buffer");
+        }
+
+        lcd.write_str(&hpa_buf, &mut delay).unwrap();
         lcd.set_cursor_pos(40, &mut delay).unwrap(); // Move to 2nd row.
-        lcd.write_str(&temp_str, &mut delay).unwrap();
+        lcd.write_str(&temp_buf, &mut delay).unwrap();
 
-        rprintln!("pressure (lps25): {:.1} hPa", lps25_pressure);
-        rprintln!("temperature (lps25): {:.2}C", lps25_temperature);
-        rprintln!("temperature (aht20): {:.2}C", aht20_measurement.temperature);
-        rprintln!("humidity (aht20): {:.2}%", aht20_measurement.humidity);
-        rprintln!("--");
+        defmt::info!("pressure (lps25): {=f32} hPa", lps25_pressure);
+        defmt::info!("temperature (lps25): {=f32}C", lps25_temperature);
+        defmt::info!("temperature (aht20): {=f32}C", aht20_measurement.temperature);
+        defmt::info!("humidity (aht20): {=f32}%", aht20_measurement.humidity);
+        defmt::info!("--");
 
         // Blink the Blue Pill's onboard LED to show liveness.
         delay.delay_ms(1_000_u16);
-        led.set_high().unwrap();
+        led.set_high();
         delay.delay_ms(1_000_u16);
-        led.set_low().unwrap();
+        led.set_low();
     }
-}
-
-#[alloc_error_handler]
-fn oom(_: Layout) -> ! {
-    loop {}
 }
